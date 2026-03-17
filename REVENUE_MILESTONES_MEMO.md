@@ -12,7 +12,7 @@ This is the arrangement: you fund it and you govern it, and decide who is respon
 
 As cumulative protocol revenue grows, team and airdrop tokens unlock in tranches and begin voting. Here is what that looks like:
 
-| Cumulative Protocol Revenue | Crowdfund participants | Founding team (individuals) | Airdrop cohort |
+| Cumulative Protocol Revenue | Crowdfund participants | Launch team (individuals) | Airdrop cohort |
 |---|---|---|---|
 | $0 — launch | 100% | 0% | 0% |
 | $10k | 83% | 13% | 4% |
@@ -22,17 +22,17 @@ As cumulative protocol revenue grows, team and airdrop tokens unlock in tranches
 | $500k | 38% | 46% | 15% |
 | $1M — full unlock | 33% | 50% | 17% |
 
-_Assumes 10% crowdfund distribution (base raise). If the crowdfund expands to 15% (1.8M ARM), crowdfund participants hold 43% at full unlock — equal to the founding team._
+_Assumes 10% crowdfund distribution (base raise). If the crowdfund expands to 15% (1.8M ARM), crowdfund participants hold 43% at full unlock — equal to the launch team._
 
 A few things the table doesn't show that matter:
 
-**Founding team tokens are held in individual wallets, not a shared entity.** Allocations are distributed to individual team members before the crowdfund opens and are published. Each person governs independently. The 50% column represents the aggregate if every team member voted identically on every proposal — which is both unlikely and visible on-chain when it happens.
+**Launch team tokens are held in individual wallets, not a shared entity.** Allocations are distributed to individual team members before the crowdfund opens and are published. Each person governs independently. The 50% column represents the aggregate if every team member voted identically on every proposal — which is both unlikely and visible on-chain when it happens.
 
-**The airdrop cohort is not an extension of the team.** The 17% at full unlock belongs to Railgun and Namada/Heliax contributors — people whose prior work Armada builds on, with their own views and independent judgment. In practice they are the swing vote on contested governance decisions, not a bloc aligned with any single interest.
+**The airdrop cohort has its own independent interests and views.** The 17% at full unlock is held by recipients whose prior work informed the protocol — each governing independently, not as a bloc aligned with the launch team.
 
-**No individual team member holds outsized unilateral power.** The largest single allocation in the founding team is 4.5% of total supply. At full unlock that represents 15% of non-treasury votes — meaningful, but not controlling on its own.
+**No individual team member holds outsized unilateral power.** The largest single allocation in the launch team is 4.5% of total supply. At full unlock that represents 15% of non-treasury votes — meaningful, but not controlling on its own.
 
-At full unlock, the founding team in aggregate holds a governance majority only by building a protocol that generates $1M in cumulative protocol fees. By earning it, not by waiting for a scheduled unlock.
+At full unlock, the launch team in aggregate holds a governance majority only by building a protocol that generates $1M in cumulative protocol fees. By earning it, not by waiting for a scheduled unlock.
 
 ---
 
