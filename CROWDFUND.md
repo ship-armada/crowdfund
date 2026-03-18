@@ -34,12 +34,7 @@ Armada will raise funds by "word-of-mouth whitelisting." The allocation mechanis
 
 Before the crowdfund opens, the following revenue-locked allocations are distributed and published:
 
-**Team Allocation (1,800,000 ARM):**
-- Distributed directly to individual locked wallets before the crowdfund opens
-- Each team member holds their own allocation; no shared multisig controls individual stakes
-- A fluid pool (remaining unallocated ARM) will be held in a Knowable multisig for future contributors and top-ups
-- All assignments are revenue-locked
-- Full distribution — role labels, wallet addresses, and percentages — is published before the crowdfund opens
+**Team Allocation (1,800,000 ARM):** See Team Allocation section below for full specification. All assignments are revenue-locked and published — role labels, wallet addresses, and percentages — before the crowdfund opens.
 
 **Airdrop Allocation (600,000 ARM):**
 - Distributed to qualifying recipients before the crowdfund opens
@@ -105,7 +100,7 @@ Launch team hop-1 invitees are full hop-1 participants: same cap ($4,000), same 
 
 **Launch team hop-2 invite budget.** The launch team also holds a predeclared budget of 60 direct hop-2 placements. The intended use case is friends, family, and adjacent supporters for whom the $1,000 cap is appropriate. These participants receive no invite rights (consistent with all hop-2 participants). Budget is fixed for the duration of the crowdfund.
 
-**No financial incentive to invite others.** Participants receive no allocation benefit from inviting distinct other addresses who commit — there is no referral bonus, no token reward, and no increase in a participant's own allocation from someone else's commitment. Invitations to other people are an act of community-building, not a financial strategy. Note: self-inviting (filling your own lower-hop slots with the same address) does have direct allocation value — the address receives ARM at each hop independently. This is disclosed and bounded, not prohibited.
+**No financial incentive to invite.** Participants receive no allocation benefit from others' commitments. There is no referral bonus, no token reward, and no increase in a participant's own allocation from someone else's commitment. Invitations are an act of community-building, not a financial strategy. This keeps the invite graph honest: people invite those they genuinely want in the community, not those most likely to maximize their own return.
 
 ### Hop Structure
 
@@ -156,34 +151,41 @@ Invitations are signed on-chain (inviter → invitee, with hop level). The invit
 - The same address may appear at multiple hop levels as a distinct node at each
 - An invite edge connects `(inviter_address, inviter_hop)` → `(invitee_address, invitee_hop)`
 - A seed (hop-0) inviting their own address to hop-1 creates a self-loop edge, visible as such in the graph
-- Invite slot consumption is per `(address, hop)` node: a hop-0 node has 3 outgoing invite slots; a hop-1 node has 2. A single address occupying both hop-0 and hop-1 has both slot budgets, but they are consumed independently by each node. A natural consequence: a seed who self-invites their own address to hop-1 may then use that hop-1 node's 2 invite slots to invite 2 additional hop-2 addresses — giving one address unilateral control over a 1→1→2 subtree, fully legible in the graph.
+- Invite slot consumption is per `(address, hop)` node: a hop-0 node has 3 outgoing invite slots; a hop-1 node has 2. A single address occupying both hop-0 and hop-1 has both slot budgets, but they are consumed independently by each node. A natural consequence: a seed who self-invites their own address to hop-1 may then use that hop-1 node's 2 invite slots to invite 2 additional hop-2 addresses — giving one address unilateral control over a 1→1→2 subtree, fully legible in the graph. For full entity-level capture analysis including the complete 1→3→6 subtree, see Self-Filling section.
 - For allocation, each `(address, hop)` node participates independently — an address at hop-0 and hop-1 receives ARM from both hop buckets, accumulated into a single address balance
 
 This model makes entity-level participation unambiguously legible without wallet correlation. Separate-wallet self-fill is also permitted and visible in graph shape, but same-entity control across wallets is not provable on-chain.
+
+**An address may appear in multiple independent subtrees.** There is no constraint preventing address_a from being a seed in their own right (hop-0) while also being invited by an unrelated seed to hop-1 or hop-2. Each `(address, hop)` node participates in allocation independently, so address_a accumulates ARM from every position it holds across all subtrees. All such participation is visible in the graph — every edge is public — so participants can observe multi-subtree presence directly. This is a deliberate choice: we cannot prevent it, and allowing the same address makes concentration legible rather than hidden.
 
 ### Self-Filling and Max Single-Entity Capture
 
 A participant may commit at multiple hop levels using a single address, and receives ARM allocation from each hop they participate in — subject to that hop's cap and pro-rata rules. This is the preferred model for transparency: a seed participating at hop-0, hop-1, and hop-2 with the same address creates an unambiguously legible self-loop in the invite graph, and receives their full multi-hop allocation without any penalty.
 
-Participating across hops using separate wallets is also permitted. Graph edges are visible, but same-entity control across separate wallets cannot be proven on-chain. Those two cases are meaningfully different and both are disclosed here.
+Participating across hops using separate wallets is also permitted. Graph edges are visible, but same-entity control across separate wallets cannot be proven on-chain.
 
-The mechanism is designed so that multi-hop participation is transparently possible but economically bounded:
+The maximum a single entity can capture **from their own subtree** is **$33,000**. An address invited by multiple independent seeds accumulates beyond this — each additional position they hold in another subtree adds independently. All such participation is visible in the graph. A seed filling all their invite slots:
 
-| Hop | Cap | Max USDC (single address) |
-|-----|-----|--------------------------|
-| Hop-0 | $15,000 | $15,000 |
-| Hop-1 | $4,000 | $4,000 |
-| Hop-2 | $1,000 | $1,000 |
-| **Total** | | **$20,000** |
+| Position | Count | Cap | Max USDC |
+|----------|-------|-----|----------|
+| Hop-0 (own address) | 1 | $15,000 | $15,000 |
+| Hop-1 (own address, self-invited) | 1 | $4,000 | $4,000 |
+| Hop-1 (separate wallets, 2 remaining hop-0 slots) | 2 | $4,000 | $8,000 |
+| Hop-2 (own address, self-invited from hop-1) | 1 | $1,000 | $1,000 |
+| Hop-2 (from own hop-1 node's remaining slot) | 1 | $1,000 | $1,000 |
+| Hop-2 (from 2 external hop-1 wallets × 2 slots each) | 4 | $1,000 | $4,000 |
+| **Total** | **10 positions, 8 addresses** | | **$33,000** |
 
-A seed committing at all three hops with one address gets ARM allocation at all three — up to $15k from hop-0, $4k from hop-1, and $1k from hop-2 — for a maximum of $20k, subject to pro-rata scaling if any hop is oversubscribed. The actual deterrents to governance concentration remain:
+Using the same address at hop-0, hop-1, and hop-2 reduces the number of wallets needed (8 instead of 10) but does not change the $33k ceiling. $33,000 out of a $1.2M base fund is 2.75%.
 
-1. **Real capital required at every hop.** $20k fully deployed is the maximum. Oversubscription scales everyone back pro-rata.
+The actual deterrents to governance concentration remain:
+
+1. **Real capital required at every position.** $33k fully deployed is the maximum; it requires real capital across all positions.
 2. **Cap differential.** Hop-0 gets $15k, hop-1 gets $4k, hop-2 gets $1k. The incremental benefit of filling lower hops is real but bounded.
-3. **Graph visibility.** The full invite graph is public in real time. Multi-hop participation by a single address is fully legible.
+3. **Graph visibility.** The full invite graph is public in real time. Self-loop chains and multi-wallet chains are both visible in structure.
 4. **Governance concentration has low ROI pre-revenue.** Accumulating votes in a protocol with no product yet is not obviously valuable.
 
-Residual risk — a seed concentrating votes at scale — is primarily mitigated by trusted-network seed selection. The mechanism does not make it impossible; it makes it expensive and bounded. Same-address multi-hop is fully visible on-chain; multi-wallet self-fill is visible in graph shape but same-entity control is not provable.
+Residual risk — a seed concentrating votes at scale — is primarily mitigated by trusted-network seed selection. The mechanism does not make it impossible; it makes it expensive, visible, and bounded.
 
 ---
 
@@ -399,7 +401,7 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 
 ## Risk Acknowledgments
 
-- **Seed quality is the critical dependency.** The allocation mechanism is algorithmic, but the network's governance quality depends entirely on the launch team's seed selection. Trusted-network seed selection is the primary defence against governance concentration and Sybil attacks — the contract mechanism does not substitute for it.
+- **Seed quality is the critical dependency.** The allocation mechanism is algorithmic, but the network's governance quality depends entirely on the launch team's seed selection. Trusted-network seed selection is the primary defence against governance concentration and Sybil attacks — the contract mechanism does not substitute for it. Maximum single-entity capture from one subtree is $33k (2.75% of base fund); an address invited by multiple seeds accumulates beyond this. See Self-Filling section.
 - **At base size, hop-0 alone cannot meet the minimum raise.** Hop-0's ceiling ($798k at base fund) is below the minimum raise ($1M). However, the same addresses filling hop-0 can also commit at hop-1 and hop-2 — those contributions count independently. For example, 67 seeds each committing $15k at hop-0 and $4k at hop-1 produces $1.273M capped_demand (base sale) and ~$1.066M net_proceeds — sufficient to finalize. After expansion (capped_demand ≥ $1.5M), hop-0's ceiling rises to $1,197k and hop-0 alone can succeed.
 - **Early governance proposals may pass on thin quorum.** Voting power activates immediately upon claim and delegation with no averaging period. The first proposals after the 7-day quiet period may be created when only a small fraction of participants have claimed. Participants are strongly encouraged to claim and delegate promptly after finalization.
 - **Governance capture is possible.** Whitelist is the mitigation, not a guarantee.
@@ -426,7 +428,7 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 | Hop allocation model | Demand-driven ceilings, not fixed reserves | Capacity follows actual demand; no hop is guaranteed allocation it didn't earn; unused capacity rolls forward |
 | Overlapping ceilings | Hop-0 and hop-1 sum to 115% of available (70/45); hop-2 has no fixed ceiling | Hop-0 and hop-1 can absorb more if the other underperforms. Hop-2's effective ceiling is floor + hop-1 leftover — it can grow arbitrarily large if earlier hops are empty, preserving full rollover flexibility |
 | Hop-2 hard floor | 5% of the fund reserved — hop-2 has first claim on this capacity | Hop-2 is governance breadth and ecosystem signal. The reserved capacity ensures hop-2 can always absorb up to the floor amount regardless of earlier hop demand. Actual receipt depends on hop-2 demand. |
-| Self-filling / multi-hop single address | Permitted, disclosed; ARM allocation received at each hop independently | Same-address multi-hop is the preferred transparency model — creates legible self-loops in the graph, max single-address capture is $20k ($15k + $4k + $1k). Multi-wallet self-fill also permitted; graph shape visible but same-entity control not provable. |
+| Multi-hop commits from single address | Permitted; receives ARM allocation at each hop independently | $33k per-subtree ceiling (2.75% of base raise). An address invited by multiple seeds accumulates across all subtrees — no global cap, but all participation is visible in the graph. Concentration is legible, not preventable. |
 | Invite window | Launch team: days 1–7 only; Seeds and hop-1: full 3 weeks | Narrows launch team discretion to week 1 — after that, no new seeds can be added and no new launch team invites can be issued. Live oversubscription data is visible during days 1–7, so this reduces but does not eliminate data-informed invite issuance. Seeds and hop-1 invitees retain full flexibility throughout. |
 | Rolling seed additions | Launch team may add seeds during week 1 only, up to 150-seed cap | Constrained to launch team's invite window. Once added, seeds may invite throughout the full 3 weeks. |
 | Seed cap | 150 seeds maximum | Bounds network to ~1,740 participant slots (nodes); distinct individuals may be fewer under single-address multi-hop |
@@ -434,7 +436,6 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 | Rollover | Unconditional — leftover always rolls forward | Rollover thresholds dropped as weak sybil protection; seed selection is the real defence. Simpler contract. |
 | No commitment withdrawals | Commitments are final once submitted | Eliminates gaming risk and simplifies contract; 3-week maximum lock period is known upfront |
 | ARM pre-load requirement | 1,800,000 ARM loaded before window opens | Ensures claim records written at finalization are always backed by sufficient ARM; enforced by contract flag |
-| Multi-hop commits from single address | Permitted; receives ARM allocation at each hop independently | Makes entity-level participation unambiguously legible on-chain. Max single-address capture is $20k (hop-0 $15k + hop-1 $4k + hop-2 $1k), subject to pro-rata at each oversubscribed hop. |
 | Settlement model | Pull-based for refunds and ARM; push for net proceeds to treasury | `finalize()` records allocations and refund amounts, transfers only net proceeds to treasury. Participants pull refunds via `claimRefund()` and ARM via `claim()`. Avoids gas grief from iterating over all participants in one transaction. |
 | Crowdfund finalization | Permissionless — callable by anyone after deadline + minimum raise met | No identified party triggers finalization. If deadline passes without minimum raise, `claimRefund()` derives eligibility from timestamp + state; no separate function or privileged action needed. |
 | Crowdfund emergency cancel | Security Council (3-of-5 multisig), immediate effect, pre-finalization only | Speed serves participants in a genuine emergency. Abuse protection from Security Council composition, automatic unconditional refunds, and pre-finalization-only restriction — not a delay. |
