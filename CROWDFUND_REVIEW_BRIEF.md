@@ -10,7 +10,7 @@ Treat it as potentially wrong. Your job is to find anything that would change im
 
 ## Key design decisions (intentional — do not re-litigate these)
 
-- **Multi-hop single-address commits are permitted and receive ARM from every hop.** An address may commit at hop-0, hop-1, and hop-2 simultaneously. It receives ARM allocation from each hop independently, accumulated into a single balance. Max single-address ARM: $15k + $4k + $1k = $20k (subject to pro-rata at each oversubscribed hop). This is the preferred transparency model: same-address multi-hop creates unambiguous self-loops in the invite graph.
+- **Multi-hop single-address commits are permitted and receive ARM from every hop.** An address may commit at hop-0, hop-1, and hop-2 simultaneously and receives ARM allocation from each independently, accumulated into a single balance. Maximum per-subtree entity capture is $33k (1 hop-0 + 3 hop-1 + 6 hop-2 = 10 positions across 8–10 addresses/wallets). An address invited by multiple independent seeds accumulates across subtrees with no global cap — all participation is visible in the graph. This is the preferred transparency model: same-address multi-hop creates unambiguous self-loops in the invite graph.
 - **`capped_demand` counts ALL (address, hop) pairs.** An address committed at hop-0 and hop-1 contributes to both. There is no primary-hop or lowest-hop deduplication. This is the canonical demand variable for minimum raise check, expansion trigger, and live stats.
 - **Hop-2 has no enforced ceiling — only a floor.** `HOP_CEILING_BPS` contains no entry for hop-2. Its effective ceiling is `hop2_floor + hop1_leftover`, which can range from $60k to the full sale size.
 - **Over-cap deposits are permitted and refunded** (not reverted at submission).
@@ -85,7 +85,7 @@ At base size, hop-0's ceiling ($798k) < MINIMUM_RAISE ($1M). Hop-0 commits alone
 
 After expansion (capped_demand ≥ $1.5M), hop-0 ceiling rises to $1,197k and hop-0 alone can succeed.
 
-**Expansion is now easier to trigger** under the all-hops model. 75 seeds each filling all three hops produces capped_demand = 75 × $20k = $1.5M (expansion trigger). Under the old primary-hop model, the same scenario produced capped_demand = 75 × $15k = $1.125M (no expansion).
+**Expansion is now easier to trigger** under the all-hops model. 46 seeds each filling their full subtree ($33k each) produces capped_demand = 46 × $33k = $1.518M — expansion triggers. Under the old primary-hop model, those same seeds would have produced only 46 × $15k = $690k. Even without full subtrees: 75 seeds each at their own hop-0+hop-1+hop-2 produces capped_demand = 75 × $20k = $1.5M (expansion trigger).
 
 ---
 
@@ -165,12 +165,13 @@ Run through the pseudocode and verify both invariants:
 4. Hop-0 only, capped_demand = $1.5M → expands and succeeds (net_proceeds = $1,197k)
 5. Hop-0 empty, all demand in hop-1 → hop-1 absorbs up to remaining_available
 6. Zero hop-2 demand → floor unused, becomes unsold_arm
-7. Single address at all three hops → ARM accumulated from all three, no higher-hop refund
-8. 75 seeds each at all three hops → capped_demand = $1.5M (75 × $20k), expansion triggers
-9. 67 seeds at hop-0 + hop-1 → capped_demand = $1.273M (base), net_proceeds ≈ $1.066M, succeeds
-10. Over-cap same-hop deposit → over-cap portion refunded, allocation at cap
-11. Cancel before any commits → withdrawUnallocatedArm() sweeps 1.8M, claimRefund() returns nothing
-12. refundMode branch: verify `finalized = true` AND `refundMode = true` both set; verify `cancel()` subsequently reverts
+7. Single address at all three hops → ARM accumulated from all three independently, no refund penalty
+8. Full subtree fill: 1 seed fills all slots (hop-0 + 3 hop-1 + 6 hop-2, 10 positions, $33k) → USDC/ARM invariants hold; capped_demand includes all positions
+9. 46 seeds each filling full subtrees → capped_demand = 46 × $33k = $1.518M, expansion triggers
+10. 67 seeds at hop-0 + hop-1 → capped_demand = $1.273M (base), net_proceeds ≈ $1.066M, succeeds
+11. Over-cap same-hop deposit → over-cap portion refunded, allocation at cap
+12. Cancel before any commits → withdrawUnallocatedArm() sweeps 1.8M, claimRefund() returns nothing
+13. refundMode branch: verify `finalized = true` AND `refundMode = true` both set; verify `cancel()` subsequently reverts
 
 ---
 
