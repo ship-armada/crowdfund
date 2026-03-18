@@ -151,41 +151,109 @@ Invitations are signed on-chain (inviter → invitee, with hop level). The invit
 - The same address may appear at multiple hop levels as a distinct node at each
 - An invite edge connects `(inviter_address, inviter_hop)` → `(invitee_address, invitee_hop)`
 - A seed (hop-0) inviting their own address to hop-1 creates a self-loop edge, visible as such in the graph
-- Invite slot consumption is per `(address, hop)` node: a hop-0 node has 3 outgoing invite slots; a hop-1 node has 2. A single address occupying both hop-0 and hop-1 has both slot budgets, but they are consumed independently by each node. A natural consequence: a seed who self-invites their own address to hop-1 may then use that hop-1 node's 2 invite slots to invite 2 additional hop-2 addresses — giving one address unilateral control over a 1→1→2 subtree, fully legible in the graph. For full entity-level capture analysis including the complete 1→3→6 subtree, see Self-Filling section.
+- Invite slot consumption is per `(address, hop)` node: a hop-0 node has 3 outgoing invite slots; a hop-1 node has 2. A single address occupying both hop-0 and hop-1 has both slot budgets, consumed independently. **There is no limit on how many times a given address may be invited to the same hop** — each invite creates a separate participation slot, and the address's effective cap at that hop equals `participation_slots[(address, hop)] × HOP_CAP[hop]`. Invite rights also scale: each invite to hop-1 grants 2 outgoing hop-2 invite slots. A natural consequence: a seed who self-invites their own address to hop-1 three times occupies 3 hop-1 slots (cap: 3 × $4k = $12k) and gains 6 outgoing hop-2 invite slots — giving one address unilateral control over a full $33k subtree, fully legible in the graph. For full entity-level capture analysis, see Self-Filling section.
 - For allocation, each `(address, hop)` node participates independently — an address at hop-0 and hop-1 receives ARM from both hop buckets, accumulated into a single address balance
 
 This model makes entity-level participation unambiguously legible without wallet correlation. Separate-wallet self-fill is also permitted and visible in graph shape, but same-entity control across wallets is not provable on-chain.
 
 **An address may appear in multiple independent subtrees.** There is no constraint preventing address_a from being a seed in their own right (hop-0) while also being invited by an unrelated seed to hop-1 or hop-2. Each `(address, hop)` node participates in allocation independently, so address_a accumulates ARM from every position it holds across all subtrees. All such participation is visible in the graph — every edge is public — so participants can observe multi-subtree presence directly. This is a deliberate choice: we cannot prevent it, and allowing the same address makes concentration legible rather than hidden.
 
+### Invite Mechanism
+
+Invitations can be issued through two paths. Both produce the same on-chain result — an `Invited` event and a new edge in the invite graph — but they differ in who initiates the transaction and when the invitee's address is known.
+
+#### Path A: Invite Link (signature-based, primary)
+
+The inviter creates a shareable link without knowing the recipient's address. The invitee opens the link, connects their wallet, and joins the network by committing USDC — all in a single atomic transaction.
+
+**How it works:**
+
+1. The inviter signs an EIP-712 typed data message authorizing one invite slot. No gas, no on-chain transaction. The message contains:
+   - `inviter`: the inviter's address
+   - `fromHop`: the inviter's hop level (determines the invitee's hop as `fromHop + 1`)
+   - `nonce`: per-inviter unique identifier (any `uint256 > 0`; nonce 0 is reserved for direct invites; each nonce can be consumed or revoked once; UI generates sequential nonces starting from 1)
+   - `deadline`: block timestamp after which the signature is invalid (default: 5 days from creation)
+
+2. The signed message is encoded into a URL and shared privately (DM, email, Signal, etc.).
+
+3. The invitee opens the link, connects their wallet, enters a commitment amount, and submits a single transaction: `commitWithInvite(inviter, fromHop, nonce, deadline, signature, amount)`.
+
+4. The contract verifies the signature, checks the nonce and deadline, records the invite edge, records the commitment, and emits both `Invited` and `Committed` events atomically.
+
+**Properties:**
+- **Bearer credential.** The link can be used by anyone who has it. The inviter does not choose the recipient — the first person to redeem the link becomes the invitee. Share links privately.
+- **No slot reservation.** Signing a link does not reserve an invite slot. Slots are checked at redemption time. An inviter may sign more links than they have slots; only the first N redeemed (where N = available slots) will succeed.
+- **Invite and commitment are atomic.** The invitee appears in the graph only when they commit with funds. There are no invited-but-uncommitted phantom nodes from the link path.
+- **5-day default expiry.** The `deadline` is baked into the signed message. Expired links fail at redemption. Generating a replacement link is free (another off-chain signature).
+- **Revocable.** The inviter may call `revokeInviteNonce(nonce)` to permanently invalidate a link before it is redeemed. This is an on-chain transaction (costs gas) and serves as a kill-switch for leaked links.
+
+**Signature verification:** The contract uses OpenZeppelin's `SignatureChecker.isValidSignatureNow()`, which supports both EOA wallets (via `ecrecover`) and smart contract wallets (via EIP-1271 `isValidSignature`). This ensures multisig and smart wallet users can create invite links.
+
+**EIP-712 domain (all four fields validated by the contract):**
+
+```
+domain: {
+  name: "ArmadaCrowdfund",
+  version: "1",
+  chainId: <deployment chain>,
+  verifyingContract: <crowdfund contract address>
+}
+```
+
+All four domain fields must be validated to prevent cross-chain and cross-contract signature replay.
+
+#### Path B: Direct Invite (on-chain, fallback)
+
+The inviter enters the invitee's address and calls `invite(invitee, fromHop)` directly, where `fromHop` is the inviter's hop level and the invitee joins at `fromHop + 1`. The invite is recorded on-chain immediately. The invitee appears in the graph with $0 committed and can commit separately at any time before the deadline.
+
+**Properties:**
+- **Address-targeted.** The inviter must know the invitee's address at invite time.
+- **Inviter pays gas.** The invitee pays nothing until they choose to commit.
+- **Graph presence before commitment.** Unlike the link path, the invitee appears in the graph immediately — even if they never commit. This is accepted because the inviter is making a deliberate, addressed placement.
+
+Both paths produce the same graph edge — `(inviter, fromHop) → (invitee, fromHop + 1)` — and the same `Invited` event. The difference is operational: links are for "share a link with someone you want in the community"; direct invites are for "I know this person's address and want to place them now."
+
+#### Duplicate Invites
+
+Multiple inviters may invite the same address to the same hop. Each invite creates a new participation slot for that address at that hop. The invitee's effective cap at the hop increases by `HOP_CAP[hop]` per invite received — this is the same `participation_slots[(address, hop)] × HOP_CAP[hop]` rule that applies to self-invites. All edges are recorded and visible in the graph. An invite slot is consumed for each inviter regardless.
+
+The same inviter may also invite the same address to the same hop more than once (e.g., via two separate links). Each successful redemption creates a new slot. This is permitted for consistency ("allow everything, make it visible"), and the inviter's slot budget limits how many such invites they can issue.
+
+#### Invite Revocation
+
+Invites issued via the direct path (`invite()`) are irrevocable — once the on-chain transaction confirms, the invitee has a permanent position.
+
+Invite links (Path A) can be revoked before redemption by calling `revokeInviteNonce(nonce)`. This permanently invalidates the nonce. The revoked link will fail if anyone attempts to redeem it. Revocation does not free the invite slot — the slot is not consumed until a link is successfully redeemed.
+
 ### Self-Filling and Max Single-Entity Capture
 
-A participant may commit at multiple hop levels using a single address, and receives ARM allocation from each hop they participate in — subject to that hop's cap and pro-rata rules. This is the preferred model for transparency: a seed participating at hop-0, hop-1, and hop-2 with the same address creates an unambiguously legible self-loop in the invite graph, and receives their full multi-hop allocation without any penalty.
+A participant may commit at multiple hop levels using a single address, and receives ARM allocation from each hop they participate in — subject to that hop's per-slot cap and pro-rata rules. This is the preferred model for transparency: a seed using the same address across all hops creates unambiguously legible self-loop edges in the invite graph, and receives their full multi-hop allocation without any penalty.
+
+There is no per-address limit on how many times an address may appear at a given hop. Each invite to a hop creates a separate participation slot, and the effective cap equals `participation_slots[(address, hop)] × HOP_CAP[hop]`. A seed using all 3 of its hop-1 invite slots on itself gains 3 hop-1 slots (cap: 3 × $4k = $12k), and each of those slots grants 2 hop-2 invites — 6 hop-2 slots total (cap: 6 × $1k = $6k).
+
+Maximum self-fill for a seed via full recursive self-invitation with one address:
+
+| Hop | Per-slot cap | Slots (self-invite) | Max USDC (single address) |
+|-----|-------------|---------------------|--------------------------|
+| Hop-0 | $15,000 | 1 | $15,000 |
+| Hop-1 | $4,000 | 3 (from hop-0 invites) | $12,000 |
+| Hop-2 | $1,000 | 6 (from hop-1 invites) | $6,000 |
+| **Total** | | | **$33,000** |
+
+An address may also receive invites from other participants (e.g., another seed inviting the same address to hop-1), which adds further slots beyond the self-invite tree. The per-hop cap for any address is `participation_slots[(address, hop)] × HOP_CAP[hop]` — there is no per-address ceiling beyond what the invite graph produces. An address invited by multiple independent seeds accumulates across all subtrees; all such participation is visible in the graph.
 
 Participating across hops using separate wallets is also permitted. Graph edges are visible, but same-entity control across separate wallets cannot be proven on-chain.
 
-The maximum a single entity can capture **from their own subtree** is **$33,000**. An address invited by multiple independent seeds accumulates beyond this — each additional position they hold in another subtree adds independently. All such participation is visible in the graph. A seed filling all their invite slots:
-
-| Position | Count | Cap | Max USDC |
-|----------|-------|-----|----------|
-| Hop-0 (own address) | 1 | $15,000 | $15,000 |
-| Hop-1 (own address, self-invited) | 1 | $4,000 | $4,000 |
-| Hop-1 (separate wallets, 2 remaining hop-0 slots) | 2 | $4,000 | $8,000 |
-| Hop-2 (own address, self-invited from hop-1) | 1 | $1,000 | $1,000 |
-| Hop-2 (from own hop-1 node's remaining slot) | 1 | $1,000 | $1,000 |
-| Hop-2 (from 2 external hop-1 wallets × 2 slots each) | 4 | $1,000 | $4,000 |
-| **Total** | **10 positions, 8 addresses** | | **$33,000** |
-
-Using the same address at hop-0, hop-1, and hop-2 reduces the number of wallets needed (8 instead of 10) but does not change the $33k ceiling. $33,000 out of a $1.2M base fund is 2.75%.
+A seed committing at all three hops via full recursive self-invitation gets ARM allocation at all three — up to $15k from hop-0, $12k from hop-1 (3 slots × $4k), and $6k from hop-2 (6 slots × $1k) — for a maximum of $33k, subject to pro-rata scaling if any hop is oversubscribed. $33,000 out of a $1.2M base fund is 2.75%.
 
 The actual deterrents to governance concentration remain:
 
-1. **Real capital required at every position.** $33k fully deployed is the maximum; it requires real capital across all positions.
-2. **Cap differential.** Hop-0 gets $15k, hop-1 gets $4k, hop-2 gets $1k. The incremental benefit of filling lower hops is real but bounded.
-3. **Graph visibility.** The full invite graph is public in real time. Self-loop chains and multi-wallet chains are both visible in structure.
+1. **Real capital required at every slot.** $33k via recursive self-invite is the self-fill maximum. Oversubscription scales everyone back pro-rata.
+2. **Cap differential.** Hop-0 gets $15k per slot, hop-1 gets $4k per slot, hop-2 gets $1k per slot. The incremental benefit of filling lower hops is real but bounded by the invite tree structure.
+3. **Graph visibility.** The full invite graph is public in real time. Multi-hop participation by a single address — including recursive self-invitation — is fully legible.
 4. **Governance concentration has low ROI pre-revenue.** Accumulating votes in a protocol with no product yet is not obviously valuable.
 
-Residual risk — a seed concentrating votes at scale — is primarily mitigated by trusted-network seed selection. The mechanism does not make it impossible; it makes it expensive, visible, and bounded.
+Residual risk — a seed concentrating votes at scale — is primarily mitigated by trusted-network seed selection. The mechanism does not make it impossible; it makes it expensive and bounded. Same-address multi-hop is fully visible on-chain; multi-wallet self-fill is visible in graph shape but same-entity control is not provable.
 
 ---
 
@@ -207,7 +275,7 @@ The launch team's invite budget (seeds, hop-1, hop-2 placements) may only be iss
 - **Currency:** USDC
 - **Method:** Commit to escrow contract
 - **Multi-hop commits from the same address are permitted.** An address may commit at multiple hop levels and receives ARM allocation from each hop it participates in. This makes entity-level participation unambiguously legible on-chain: a seed who also fills hop-1 and hop-2 slots with the same address is visibly doing so, and receives the ARM from all three pools.
-- **Multiple commitments:** A participant may commit multiple times to any hop. Commitments from the same address at the same hop are aggregated into a single running balance, capped at the hop cap for allocation purposes.
+- **Multiple commitments:** A participant may commit multiple times to any hop. Commitments from the same address at the same hop are aggregated into a single running balance, capped at `participation_slots[(address, hop)] × HOP_CAP[hop]` for allocation purposes (each invite to a hop creates a separate participation slot).
 - **Visibility:** Address, amount, hop, and invite edges are all public in real time
 - **No withdrawals:** Commitments are final once submitted. Participants cannot withdraw USDC before the deadline. The commitment window is a maximum of 3 weeks; participants should only commit amounts they are prepared to lock for that period.
 
@@ -285,7 +353,7 @@ The allocation algorithm proceeds in four sequential steps, each with a separate
 
 4. **Hop-2 allocated from floor + hop-1 leftover.** Hop-2's effective ceiling = `hop2_floor + hop1_leftover`. The floor is always available regardless of earlier hop demand. Any capacity hop-2 doesn't absorb becomes unsold ARM, recoverable via `withdrawUnallocatedArm()`.
 
-Oversubscription at any hop is resolved pro-rata within that hop's effective ceiling, bounded by per-address caps. An address committed at multiple hops receives ARM allocation from each hop independently. See appendix for full pseudocode.
+Oversubscription at any hop is resolved pro-rata within that hop's effective ceiling, bounded by per-address per-hop caps (where the cap equals `participation_slots[(address, hop)] × HOP_CAP[hop]`). An address committed at multiple hops receives ARM allocation from each hop independently. See appendix for full pseudocode.
 
 `capped_demand` — the sum of all aggregated per-address per-hop balances after caps — is the canonical demand variable used for the minimum raise check, the expansion trigger, and per-hop statistics. An address committed at multiple hops contributes to `capped_demand` at each hop independently.
 
@@ -446,6 +514,80 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 
 ---
 
+## Contract Interface
+
+### External Functions
+
+| Function | Caller | Parameters | Preconditions | Effects |
+|---|---|---|---|---|
+| `loadArm()` | Anyone (once) | — | Contract holds ≥ MAX_SALE ARM; not already called | Sets ARM-loaded flag; enables commitment window; emits `ArmLoaded` |
+| `addSeed(address)` | Launch team | Seed address | ARM loaded; week 1 only; seed count < 150; not cancelled; not finalized | Adds address as hop-0 node; records edge from ROOT; emits `SeedAdded`; decrements seed budget |
+| `launchTeamInvite(invitee, fromHop)` | Launch team | Target address, inviter's hop (0 or 1; invitee joins at `fromHop + 1`) | ARM loaded; week 1 only; budget remaining for target hop; not cancelled; not finalized | Records invite edge from ROOT to invitee at `fromHop + 1`; emits `Invited(ROOT, invitee, fromHop + 1, 0)`; decrements launch team budget |
+| `commit(hop, amount)` | Participant | Hop level, USDC amount | ARM loaded; pre-deadline; not cancelled; not finalized; address holds at least one participation slot at this hop (hop-0 slots from `SeedAdded`; hop-1/hop-2 slots from `Invited`) | Records commitment; transfers USDC to escrow; emits `Committed` |
+| `invite(invitee, fromHop)` | Inviter | Target address, inviter's hop | ARM loaded; pre-deadline; not cancelled; not finalized; caller has available slots at `fromHop` | Records invite edge; creates a new participation slot for invitee at `fromHop + 1` (increases invitee's cap by `HOP_CAP[fromHop + 1]`); emits `Invited(caller, invitee, fromHop + 1, 0)`; decrements inviter's slot count at `fromHop` |
+| `commitWithInvite(inviter, fromHop, nonce, deadline, signature, amount)` | Invitee | Inviter address, inviter's hop, nonce, deadline, EIP-712 signature, USDC amount | Valid EIP-712 + EIP-1271 signature; `nonce > 0`; `block.timestamp ≤ deadline`; nonce not used/revoked; inviter has available slots at `fromHop`; ARM loaded; pre-deadline; not cancelled; not finalized; USDC approved | Records invite edge + commitment atomically; creates a new participation slot for invitee at `fromHop + 1`; transfers USDC to escrow; emits `Invited(inviter, caller, fromHop + 1, nonce)` + `Committed(caller, fromHop + 1, amount)`; consumes nonce; decrements inviter's slot count |
+| `revokeInviteNonce(nonce)` | Inviter | Nonce to revoke | `nonce > 0`; nonce not already consumed or revoked | Marks nonce permanently revoked; emits `InviteNonceRevoked` |
+| `finalize()` | Anyone | — | Post-deadline; not finalized; not cancelled; `capped_demand ≥ MINIMUM_RAISE` | Computes allocations; records per-address allocations and refund amounts; sets `finalized = true`; transfers net proceeds to treasury; emits `Finalized`. **Single-transaction mode (preferred):** also emits per-address `Allocated` + `AllocatedHop` events in the same transaction. **Phased mode (fallback):** emits only `Finalized`; settlement events are emitted later via `emitSettlement()`. **RefundMode branch:** if `net_proceeds < MINIMUM_RAISE`, sets both `finalized = true` and `refundMode = true`; no treasury transfer; no allocation/refund recording; emits `Finalized(refundMode=true)` only — no `Allocated` or `AllocatedHop` in either mode. |
+| `emitSettlement(startIndex, count)` | Anyone | Start index, batch size | Phased fallback only. `finalized == true`; `refundMode == false`; settlement events not yet fully emitted; `startIndex` must be monotonically advancing (batches are non-overlapping and sequential — no re-emission or out-of-order) | Emits `Allocated` + `AllocatedHop` events for the specified batch. `SettlementComplete` emitted exactly once, automatically when the final batch completes. No state changes beyond tracking emission progress. |
+| `claimRefund()` | Participant | — | `refundMode == true` OR (`post-deadline AND !finalized AND capped_demand < MINIMUM_RAISE`) OR `cancelled == true`; refund not already claimed | Transfers refund USDC to caller; emits `RefundClaimed` |
+| `claim(delegate)` | Participant | Delegate address | `finalized == true`; `refundMode == false`; within 3-year deadline; not already claimed | Transfers allocated ARM to caller; records delegation; emits `ArmClaimed` |
+| `cancel()` | Security Council | — | Not finalized | Sets `cancelled` permanently; emits `Cancelled` |
+| `withdrawUnallocatedArm()` | Anyone | — | `finalized == true` (sweeps unsold) OR post-3yr-deadline (sweeps unclaimed) OR `cancelled == true` (sweeps all 1.8M) | Transfers eligible ARM to immutable treasury address |
+
+**Hop parameter convention:** All invite functions use `fromHop` — the inviter's hop level. The invitee's hop is always `fromHop + 1` and is never passed as a parameter.
+
+---
+
+## Required Contract Events
+
+| Event | Emitted by | Fields | Description |
+|---|---|---|---|
+| `ArmLoaded` | `loadArm()` | — | ARM pre-load verified; commitment window enabled |
+| `SeedAdded` | `addSeed()` | `address seed` | New hop-0 node added; edge from ROOT |
+| `Invited` | `invite()`, `commitWithInvite()`, `launchTeamInvite()` | `address inviter, address invitee, uint8 hop, uint256 nonce` | New invite edge. `hop` is the invitee's hop level. `nonce` is 0 for direct invites, `> 0` for link-based invites — enables UI to track link consumption from events alone. |
+| `Committed` | `commit()`, `commitWithInvite()` | `address participant, uint8 hop, uint256 amount` | USDC committed at specific hop; amount is raw deposit (may exceed cap) |
+| `InviteNonceRevoked` | `revokeInviteNonce()` | `address inviter, uint256 nonce` | Invite link nonce permanently invalidated |
+| `Finalized` | `finalize()` | `uint256 saleSize, uint256 allocatedArm, uint256 netProceeds, bool refundMode` | Settlement completed; `refundMode` flag distinguishes success from refundMode finalization without reading contract storage |
+| `Allocated` | `finalize()` or `emitSettlement()` | `address indexed participant, uint256 totalArmAmount, uint256 totalRefundAmount` | Aggregate per-address settlement. One event per participating address. Success path only (not refundMode). In single-tx mode, emitted by `finalize()`; in phased mode, emitted by `emitSettlement()`. |
+| `AllocatedHop` | `finalize()` or `emitSettlement()` | `address indexed participant, uint8 indexed hop, uint256 armAmount` | Per-hop ARM allocation. One event per (address, hop) with `armAmount > 0`. Success path only. No refund field — refunds are aggregate (see `Allocated`). Settlement invariant: `sum(AllocatedHop.armAmount) == Allocated.totalArmAmount` per address. |
+| `ArmClaimed` | `claim()` | `address participant, uint256 armAmount, address delegate` | ARM transferred; delegation recorded |
+| `RefundClaimed` | `claimRefund()` | `address participant, uint256 usdcAmount` | Refund USDC transferred |
+| `Cancelled` | `cancel()` | — | Crowdfund permanently cancelled by Security Council |
+| `SettlementComplete` | `emitSettlement()` (phased fallback only) | — | All `Allocated` and `AllocatedHop` events emitted. Emitted exactly once, automatically on final batch. Under single-transaction finalization, all settlement events arrive in the same block as `Finalized` and this event is not needed. |
+
+**Event design principles:**
+- Every state change emits an event. The observer reconstructs full crowdfund state from events alone — no view functions required for the core display.
+- `Allocated` and `AllocatedHop` are emitted on the success path only — by `finalize()` in single-transaction mode, or by `emitSettlement()` in phased mode. In refundMode, neither is emitted — the observer derives full-refund eligibility from `Finalized(refundMode=true)` combined with `Committed` totals.
+- `AllocatedHop` is only emitted when `armAmount > 0`. Zero-allocation hops produce no event — the UI infers zero from absence.
+- `commitWithInvite()` emits both `Invited` and `Committed` in the same transaction; the observer processes them independently.
+
+### Gas Considerations
+
+**Single-transaction finalization is preferred.** On the success path, `finalize()` emits `Allocated` (one per address, ~800 events at max) plus `AllocatedHop` (one per non-zero (address, hop), up to ~1,600 events). At ~1,200 gas per event, that's ~2.9M gas for events alone, on top of allocation computation and storage writes. This should be feasible within a 30M block gas limit but must be verified during implementation.
+
+**Phased finalization is acceptable as a fallback** if single-transaction gas exceeds block limits. In this case, `finalize()` computes and stores allocations in one transaction, and a separate `emitSettlement(startIndex, count)` function emits `Allocated` + `AllocatedHop` events in batches. If phased finalization is implemented:
+- `claim()` is available immediately after `finalize()` — the on-chain allocation records are written during `finalize()` regardless of whether settlement events have been emitted. Event emission is a transparency layer, not a gating condition for claims.
+- The UI must handle an intermediate state: settlement computed but events not yet fully emitted. Show "Settlement in progress — allocation data arriving" rather than incomplete data as final.
+- The final `emitSettlement()` batch emits `SettlementComplete()`. The observer treats `Finalized` without `SettlementComplete` as settlement-in-progress.
+
+### EIP-712 Typed Data (Invite Links)
+
+```solidity
+bytes32 constant INVITE_TYPEHASH = keccak256(
+    "Invite(address inviter,uint8 fromHop,uint256 nonce,uint256 deadline)"
+);
+
+bytes32 constant DOMAIN_TYPEHASH = keccak256(
+    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+);
+```
+
+The contract stores the domain separator at deployment (computed from the four domain fields). Signature verification uses `SignatureChecker.isValidSignatureNow(inviter, digest, signature)` from OpenZeppelin, supporting both EOA and EIP-1271 contract wallets.
+
+Nonces are per-inviter, any unique `uint256 > 0` — nonce 0 is reserved as the sentinel value for direct invites (`invite()` emits `Invited(..., nonce=0)`). `commitWithInvite()` requires `nonce > 0` and reverts otherwise. The contract imposes no ordering requirement on valid nonces. Each nonce can be consumed (by successful redemption) or revoked (by the inviter) exactly once. A mapping `mapping(address => mapping(uint256 => bool))` tracks consumed and revoked nonces.
+
+---
+
 ## Appendix: Allocation Pseudocode
 
 The following pseudocode is the **specification-intent** description of the allocation algorithm. It uses simplified arithmetic for readability. The contract implementation must use **integer math throughout**: percentages as basis points (BPS), token amounts in their smallest denomination (USDC: 6 decimals, ARM: 18 decimals), floor rounding on all pro-rata splits (participants may receive fractionally less than their exact share; dust accumulates as unallocated ARM), and no floating-point operations.
@@ -456,6 +598,7 @@ The following pseudocode is the **specification-intent** description of the allo
 
 **Contract preconditions (enforced before `finalize()` is called):**
 - An address may commit at multiple hop levels and receives ARM allocation from each independently.
+- Per-address cap at any hop = `participation_slots[(address, hop)] × HOP_CAP[hop]`. Slot sources: hop-0 from `SeedAdded`; hop-1/hop-2 from `Invited` events.
 - `loadArm()` has been called; contract holds ≥ `MAX_SALE` ARM.
 - The commitment deadline has passed and `capped_demand >= MINIMUM_RAISE`.
 - After computing allocations, if `net_proceeds < MINIMUM_RAISE`, the contract sets both `finalized = true` and `refundMode = true` without reverting — `finalized = true` permanently disables `finalize()` and `cancel()`; `claimRefund()` activates via the `refundMode` condition. This can occur at base size when hop-0 is oversubscribed and combined later-hop demand doesn't close the gap to $1M. Cannot occur after expansion.
@@ -475,23 +618,33 @@ PRICE             = 1               # Specification uses whole-unit amounts for 
 
 HOP_CEILING_BPS = {0: 7000, 1: 4500}    # BPS of available pool; hop-2 uses floor+rollover, not a BPS ceiling
 HOP2_FLOOR_BPS  = 500                   # BPS of sale_size
-HOP_CAP         = {0: 15_000, 1: 4_000, 2: 1_000}  # USDC per address per hop
+HOP_CAP         = {0: 15_000, 1: 4_000, 2: 1_000}  # USDC per slot per hop
+# Per-address cap at a given hop = participation_slots[(address, hop)] × HOP_CAP[hop]
+# Slot sources by hop:
+#   hop-0: count of SeedAdded events where seed=address (always 0 or 1)
+#   hop-1/hop-2: count of Invited events where invitee=address and invitee_hop=hop
 
 
-def allocate(commitments):
+def allocate(commitments, participation_slots):
     """
-    commitments: list of Commitment(address, hop, usdc_committed)
+    commitments:        list of Commitment(address, hop, usdc_committed)
+    participation_slots: dict of (address, hop) -> int (number of slots at that hop)
+                         hop-0 slots from SeedAdded; hop-1/hop-2 slots from Invited events
     An address may commit at multiple hops and receives ARM allocation from each.
-    Deposits above the hop cap are permitted; excess is refunded at settlement.
+    Per-address cap at hop = participation_slots[(address, hop)] × HOP_CAP[hop].
+    Deposits above the cap are permitted; excess is refunded at settlement.
     """
 
-    # Step 1: Aggregate multiple commitments per (address, hop), capped at hop cap.
-    aggregated = {}  # (address, hop) -> effective USDC (capped at hop cap)
+    # Step 1: Aggregate multiple commitments per (address, hop),
+    # capped at participation_slots[(address, hop)] × HOP_CAP[hop].
+    aggregated = {}  # (address, hop) -> effective USDC (capped)
     for c in commitments:
         key = (c.address, c.hop)
+        slots = participation_slots.get(key, 0)
+        cap = slots * HOP_CAP[c.hop]
         aggregated[key] = min(
             aggregated.get(key, 0) + c.usdc_committed,
-            HOP_CAP[c.hop]
+            cap
         )
 
     # Step 2: Compute capped_demand and determine sale size.
@@ -511,19 +664,24 @@ def allocate(commitments):
         # All addresses committed at this hop, regardless of other hops they joined.
         return {addr: amt for (addr, h), amt in aggregated.items() if h == hop}
 
-    allocations = {}  # address -> total ARM allocated (accumulated across all hops)
+    allocations = {}      # address -> total ARM allocated (accumulated across all hops)
+    hop_allocations = {}  # (address, hop) -> ARM allocated at this specific hop (for AllocatedHop events)
 
     # Step 4: Allocate hop-0 from available pool.
     p0 = participants(0)
     d0 = sum(p0.values())
     if d0 <= hop0_ceiling:
         for addr, amt in p0.items():
-            allocations[addr] = allocations.get(addr, 0) + amt // PRICE
+            arm = amt // PRICE
+            allocations[addr] = allocations.get(addr, 0) + arm
+            hop_allocations[(addr, 0)] = arm
         hop0_leftover = hop0_ceiling - d0
         eff0 = d0
     else:
         for addr, amt in p0.items():
-            allocations[addr] = allocations.get(addr, 0) + amt * hop0_ceiling // d0 // PRICE  # floor round
+            arm = amt * hop0_ceiling // d0 // PRICE  # floor round
+            allocations[addr] = allocations.get(addr, 0) + arm
+            hop_allocations[(addr, 0)] = arm
         hop0_leftover = 0
         eff0 = hop0_ceiling
 
@@ -537,12 +695,16 @@ def allocate(commitments):
     d1 = sum(p1.values())
     if d1 <= hop1_eff_ceiling:
         for addr, amt in p1.items():
-            allocations[addr] = allocations.get(addr, 0) + amt // PRICE
+            arm = amt // PRICE
+            allocations[addr] = allocations.get(addr, 0) + arm
+            hop_allocations[(addr, 1)] = arm
         hop1_leftover = hop1_eff_ceiling - d1
         eff1 = d1
     else:
         for addr, amt in p1.items():
-            allocations[addr] = allocations.get(addr, 0) + amt * hop1_eff_ceiling // d1 // PRICE  # floor round
+            arm = amt * hop1_eff_ceiling // d1 // PRICE  # floor round
+            allocations[addr] = allocations.get(addr, 0) + arm
+            hop_allocations[(addr, 1)] = arm
         hop1_leftover = 0
         eff1 = hop1_eff_ceiling
 
@@ -553,11 +715,15 @@ def allocate(commitments):
     d2 = sum(p2.values())
     if d2 <= hop2_eff_ceiling:
         for addr, amt in p2.items():
-            allocations[addr] = allocations.get(addr, 0) + amt // PRICE
+            arm = amt // PRICE
+            allocations[addr] = allocations.get(addr, 0) + arm
+            hop_allocations[(addr, 2)] = arm
         eff2 = d2
     else:
         for addr, amt in p2.items():
-            allocations[addr] = allocations.get(addr, 0) + amt * hop2_eff_ceiling // d2 // PRICE  # floor round
+            arm = amt * hop2_eff_ceiling // d2 // PRICE  # floor round
+            allocations[addr] = allocations.get(addr, 0) + arm
+            hop_allocations[(addr, 2)] = arm
         eff2 = hop2_eff_ceiling
 
     # Step 7: Compute USDC and ARM accounting.
@@ -592,7 +758,8 @@ def allocate(commitments):
         full_refunds = {addr: deposited for addr, deposited in total_deposited.items()}
         # Verify: sum(full_refunds) == sum(total_deposited); no ARM allocated
         assert sum(full_refunds.values()) == sum(total_deposited.values())
-        return None, full_refunds, MAX_SALE, 0  # (no allocations, full refunds, all ARM unsold, zero proceeds)
+        # No Allocated or AllocatedHop events emitted in refundMode.
+        return None, None, full_refunds, MAX_SALE, 0
 
     total_deposited = {}
     for c in commitments:
@@ -606,8 +773,17 @@ def allocate(commitments):
     # Verify invariants (implementation must enforce these):
     assert net_proceeds + sum(refunds.values()) == sum(total_deposited.values())  # USDC
     assert allocated_arm + unsold_arm == MAX_SALE                                  # ARM
+    # Settlement invariant: per-hop ARM sums to aggregate ARM for each address.
+    # This is the property tested by: sum(AllocatedHop.armAmount) == Allocated.totalArmAmount
+    for addr in allocations:
+        per_hop_sum = sum(arm for (a, h), arm in hop_allocations.items() if a == addr)
+        assert per_hop_sum == allocations[addr]
 
-    return allocations, refunds, unsold_arm, net_proceeds
+    # Return values map to events:
+    #   allocations     -> Allocated(address, totalArmAmount, totalRefundAmount)
+    #   hop_allocations -> AllocatedHop(address, hop, armAmount) for each entry with armAmount > 0
+    #   refunds         -> included in Allocated event's totalRefundAmount field
+    return allocations, hop_allocations, refunds, unsold_arm, net_proceeds
 ```
 
 **Key properties the implementation must preserve:**
