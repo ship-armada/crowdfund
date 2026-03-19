@@ -27,20 +27,21 @@ ARM is the governance and ownership token of the Armada protocol. This document 
 
 ## 3. Genesis Allocation
 
-All ARM is minted at deployment. The deployment-time distribution is:
+All ARM is minted at deployment to the deployer address. Distribution to recipients is handled by the deployment script via standard `transfer()` calls after the token contract is deployed — the same pattern as the crowdfund's `loadArm()`. The constructor sets name, symbol, mints total supply to the deployer, and stores the immutable configuration (whitelist addresses, treasury address).
 
-| Allocation | Amount at deployment | Recipient | Notes |
+**Deployment-time distribution (via deployment script, not constructor):**
+
+| Allocation | Amount | Recipient | Notes |
 |---|---|---|---|
-| Crowdfund contract | 1,800,000 (MAX_SALE) | Crowdfund contract address | Always 1.8M regardless of elastic expansion. Transferred to contract, then verified by `loadArm()`. |
-| Treasury | 7,800,000 | Treasury multisig | Fixed at deployment. |
-| Team | 1,800,000 | Shared revenue-lock contract | See below. |
-| Airdrop | 600,000 | Shared revenue-lock contract | Same lock contract as team, same milestone schedule. |
+| Crowdfund contract | 1,800,000 (MAX_SALE) | Crowdfund contract address | Always 1.8M regardless of elastic expansion. Verified by `loadArm()`. |
+| Treasury | 7,800,000 | Treasury multisig | |
+| Team + Airdrop | 2,400,000 | Shared revenue-lock contract | See below. |
 
 **Revenue-lock contract architecture:** A single shared revenue-lock contract holds all team and airdrop ARM (2,400,000 total). The contract tracks per-beneficiary allocations internally:
 
 - **Beneficiary list** is set at deployment: each team member, each airdrop recipient, and the Knowable Safe (which holds the portion reserved for future contributors) are all entries in the same list with their respective amounts.
-- **Release logic** is identical for all beneficiaries: as revenue milestones are reached, each beneficiary can call `release()` to withdraw their unlocked percentage.
-- **The Knowable Safe** appears in the beneficiary list like any other team member — it simply has a larger allocation. When a future contributor is identified, the Safe calls `reassign(newRecipient, amount)` to carve off a portion of its own allocation to the new recipient. The new recipient inherits the same milestone schedule and can immediately release whatever percentage is already unlocked. The Safe cannot bypass the release schedule or withdraw ahead of milestones.
+- **Release logic** is identical for all beneficiaries: as revenue milestones are reached, each beneficiary can call `release(delegatee)` to withdraw their unlocked percentage. ARM is transferred and delegated atomically.
+- **The Knowable Safe** appears in the beneficiary list like any other team member — it simply has a larger allocation. Future contributor allocations are handled through off-chain agreements between Knowable and contributors; once ARM is released to the Safe's wallet (per the milestone schedule), Knowable distributes to contributors through standard ARM transfers (available once governance enables global transfers).
 - **One whitelist entry** in the ARM token constructor for this lock contract. No per-recipient whitelisting needed.
 
 **Post-finalization treasury growth:** The crowdfund contract always receives 1,800,000 ARM at deployment. If the sale stays at base size (1,200,000 ARM allocated), the remaining 600,000 ARM becomes unsold and sweepable to treasury via `withdrawUnallocatedArm()` after finalization. The treasury's total ARM holding post-finalization is therefore 7,800,000 + unsold amount.
@@ -113,11 +114,18 @@ Three constructor parameters. The full set of whitelisted addresses is known bef
 | Address | Why not |
 |---|---|
 | Governance contract(s) | Proposal bonds (per GOVERNANCE.md: 1,000 ARM, returned after lock period) require a holder to transfer ARM to the governance contract. During RESTRICTED state, non-whitelisted holders cannot transfer — so bonds are technically impossible. But bonds are also economically meaningless before transfer unlock: "losing access" to non-transferable ARM has zero opportunity cost. Bonds activate naturally once governance enables transfers, at which point all addresses can transfer and no whitelist is needed. **Pre-transfer-unlock governance operates on proposal threshold only (12,000 delegated ARM) — no bond required.** This avoids a chicken-and-egg problem: the proposal to enable transfers must itself be creatable without a bond. The governor contract's authority to call `setTransferable(true)` is a function access-control check, not a transfer-whitelist issue — see §8 transfer gate controller role. |
-| Knowable Safe | The Safe is a beneficiary in the revenue-lock contract, not a direct ARM holder. It can reassign its allocation to future contributors via `reassign()` on the lock contract, but ARM flows from the lock contract to recipients — not through the Safe. No whitelist needed. |
+| Knowable Safe | The Safe is a beneficiary in the revenue-lock contract — same as any other team member, just with a larger allocation. ARM is released to the Safe's wallet per the milestone schedule. Future contributor allocations are handled off-chain (token agreements between Knowable and contributors); once ARM is in the Safe's wallet and global transfers are enabled, Knowable distributes via standard transfers. No whitelist needed. |
 
 ### What unlocks transfers
 
-A governance proposal. There are no predeclared conditions — ARM holders decide when transfers should be enabled. The unlock is a single state transition: `setTransferable(true)`. Once called, it cannot be reversed.
+### What unlocks transfers
+
+Two paths, both irreversible:
+
+1. **Governance proposal.** ARM holders vote to enable transfers. There are no predeclared conditions — holders decide when.
+2. **Wind-down trigger.** `triggerWindDown()` automatically calls `setTransferable(true)` as a side effect. Holders must be able to move ARM to claim their pro-rata share of treasury assets — they may hold ARM on an exchange, in a multisig, or in a contract that isn't their claim address.
+
+Both paths call the same `setTransferable(true)`. Once called, it cannot be reversed.
 
 ### What RESTRICTED means for holders
 
@@ -181,12 +189,15 @@ Standard OZ `ERC20Votes` only lets an address delegate their own voting power �
 function delegateOnBehalf(address account, address delegatee) external
 ```
 
-- Callable **only** by the crowdfund contract address (set immutably in the ARM token constructor)
+- Callable **only** by addresses set immutably in the ARM token constructor: the crowdfund contract and the revenue-lock contract
 - Sets `account`'s delegation to `delegatee`
 - Emits standard `DelegateChanged(account, oldDelegatee, newDelegatee)` and `DelegateVotesChanged` events
-- The crowdfund contract calls `ARM.transfer(participant, amount)` followed by `ARM.delegateOnBehalf(participant, delegatee)` within the same `claim()` transaction
 
-**Why this approach:** The alternative (requiring participants to delegate in a separate transaction) breaks the GOVERNANCE.md requirement that "ARM tokens cannot be claimed without simultaneously designating a delegatee" and creates a window of undelegated circulating supply. The access control is narrow: only the crowdfund contract, set immutably at deployment, can call this function. Auditors should verify the access control cannot be changed.
+**Crowdfund usage:** The crowdfund contract calls `ARM.transfer(participant, amount)` followed by `ARM.delegateOnBehalf(participant, delegatee)` within the same `claim()` transaction.
+
+**Revenue-lock usage:** The revenue-lock contract calls `ARM.transfer(beneficiary, releasedAmount)` followed by `ARM.delegateOnBehalf(beneficiary, delegatee)` within the same `release(delegatee)` transaction. This ensures team/airdrop ARM is delegated immediately upon release, matching the crowdfund claim pattern — no ARM enters circulation undelegated.
+
+**Why this approach:** The alternative (requiring recipients to delegate in a separate transaction) breaks the GOVERNANCE.md requirement that all circulating ARM should be active in the governance denominator and creates a window of undelegated supply. The access control is narrow: only two contracts, both set immutably at deployment, can call this function. Auditors should verify the access control cannot be changed.
 
 ### Vote-inert ARM
 
@@ -197,8 +208,8 @@ The following ARM has zero voting power under all circumstances:
 | Unclaimed crowdfund ARM (still in crowdfund contract) | Not yet distributed to a holder | Crowdfund contract has no `delegate()` call path for its own balance. ARM physically in the contract cannot be delegated. |
 | Undelegated ARM (held but no `delegate()` called) | Delegation is required to activate voting power | Standard ERC20Votes behavior — undelegated balance has zero voting units. |
 | Treasury ARM | Governance-controlled, does not vote | **Token-enforced:** `delegate()` reverts when called by the treasury address. Hardcoded in ARM token contract. Not process discipline — the token physically prevents the treasury from delegating. |
-| Unreleased team/airdrop ARM (in revenue-lock contracts) | Revenue milestone not yet reached | **Architectural:** ARM sits in a lock contract that has no `delegate()` call path. Unreleased ARM cannot be delegated because the contract holding it structurally cannot delegate. |
-| Released team/airdrop ARM (in recipient's personal wallet) | Revenue milestone reached; ARM released | Normal ERC20Votes behavior. Recipient can delegate once ARM is in their wallet. Voting power = released amount only. |
+| Unreleased team/airdrop ARM (in revenue-lock contract) | Revenue milestone not yet reached | **Architectural:** ARM sits in the lock contract which has no standalone `delegate()` call path. Unreleased ARM cannot be delegated. |
+| Released team/airdrop ARM (in recipient's personal wallet) | Revenue milestone reached; ARM released | Delegated atomically at release via `release(delegatee)` → `delegateOnBehalf()`. Immediately active in governance. |
 
 ### 6.2 Voting Enforcement Architecture
 
@@ -206,7 +217,7 @@ Standard OZ `ERC20Votes` is sufficient for the core checkpointing. The voting re
 
 **Treasury non-voting:** The ARM token contract hardcodes the treasury address (constructor parameter). Any call to `delegate()` from the treasury address reverts. This is a single-line check in the `delegate()` override, not a custom voting-unit calculation. The treasury can still transfer ARM (it's whitelisted) — it just cannot convert its balance into voting power.
 
-**Revenue-gated team/airdrop voting:** A single shared revenue-lock contract holds all team and airdrop ARM. As revenue milestones are reached, beneficiaries call `release()` to withdraw their unlocked percentage to their personal wallet. Only ARM in the personal wallet can be delegated — the lock contract itself has no `delegate()` function and no code path that calls `delegate()` on the ARM token.
+**Revenue-gated team/airdrop voting:** A single shared revenue-lock contract holds all team and airdrop ARM. As revenue milestones are reached, beneficiaries call `release(delegatee)` to withdraw their unlocked percentage to their personal wallet. The lock contract atomically transfers ARM and calls `delegateOnBehalf(beneficiary, delegatee)` — mirroring the crowdfund `claim(delegate)` pattern. All released ARM enters circulation delegated. The lock contract itself has no standalone `delegate()` call path — unreleased ARM remains structurally vote-inert.
 
 This means:
 - At $0 revenue: all team/airdrop ARM sits in lock contracts → zero voting power
@@ -242,9 +253,9 @@ The crowdfund contract relies on pre-minted ARM only. `loadArm()` verifies `bala
 
 | Role | Power | Exists at deploy? | Can be renounced? | Time-limited? | Intended disposition |
 |---|---|---|---|---|---|
-| Transfer gate controller | `setTransferable(true)` | Yes (governance) | N/A — one-shot | No | Called once by governance; function becomes no-op after |
+| Transfer gate controller | `setTransferable(true)` | Yes (governance + wind-down contract) | N/A — one-shot | No | Called once — either by governance proposal or as side effect of wind-down trigger. Function becomes no-op after first call. |
 | Revenue counter updater | Credits cumulative revenue to the milestone counter. Stablecoin fees are directly countable; non-stablecoin fees require governance attestation. | Yes (governance) | No — ongoing | No | Governance-controlled; no external oracle dependency |
-| Claim delegation caller | `delegateOnBehalf(account, delegatee)` | Yes (crowdfund contract) | N/A — immutable | Naturally expires when crowdfund claims complete | Set in constructor; only the crowdfund contract can call |
+| Claim/release delegation caller | `delegateOnBehalf(account, delegatee)` | Yes (crowdfund contract + revenue-lock contract) | N/A — immutable | Naturally expires when crowdfund claims and lock releases complete | Set in constructor; only these two contracts can call |
 | Admin / owner | None | No | N/A | N/A | No admin role exists |
 | Whitelist modifier | None | No | N/A | N/A | Whitelist is constructor-set and immutable |
 | Minter | None | No | N/A | N/A | No minting capability |
@@ -252,7 +263,7 @@ The crowdfund contract relies on pre-minted ARM only. `loadArm()` verifies `bala
 | Upgrader | None | No | N/A | N/A | See §9 |
 | Metadata role | None | No | N/A | N/A | Name and symbol are immutable |
 
-**There is no admin role on the ARM token contract.** The only privileged operations are the transfer gate (governance-controlled, one-shot), the revenue counter (governance-attested), and `delegateOnBehalf` (crowdfund contract only, immutably set). The whitelist is constructor-set and immutable — three addresses: crowdfund contract, treasury, and the revenue-lock contract. No address can modify token behavior post-deployment beyond these narrow paths.
+**There is no admin role on the ARM token contract.** The only privileged operations are the transfer gate (governance-controlled, one-shot), the revenue counter (governance-attested), and `delegateOnBehalf` (crowdfund contract + revenue-lock contract, immutably set). The whitelist is constructor-set and immutable — three addresses: crowdfund contract, treasury, and the revenue-lock contract. No address can modify token behavior post-deployment beyond these narrow paths.
 
 ---
 
@@ -260,13 +271,15 @@ The crowdfund contract relies on pre-minted ARM only. `loadArm()` verifies `bala
 
 | Property | Value |
 |---|---|
-| Proxy pattern | None. |
-| Upgrade mechanism | None. |
-| Deployed bytecode | Final and immutable. |
+| Proxy pattern | None |
+| Upgrade mechanism | None |
+| Deployed bytecode | Final and immutable |
 
 The ARM token contract is not upgradeable. There is no proxy, no UUPS, no diamond, no beacon. The deployed bytecode is the permanent contract.
 
-If a bug is found that requires a fix, the remediation path is migration (new contract + balance snapshot), not upgrade.
+**Rationale:** The ARM token is the root of the system — the governor, revenue-lock contract, and all downstream contracts reference it by address. Upgradeability would make every invariant in §12 conditional on governance not voting to change them, weakening the core trust guarantee. The custom surface area beyond battle-tested OZ primitives is small (~50 lines — see below), making the probability of a critical bug low enough to accept the migration cost in a worst case over the trust cost of upgradeability. ARM does not enter the shielded pool (it's a governance/ownership token, not a payment asset), so token migration would not affect shielded notes.
+
+**Worst-case recovery path:** Deploy a new ARM token with fixed code, snapshot balances, coordinate migration. Disruptive but feasible. If the OZ base contracts have a critical vulnerability, the entire ERC20Votes ecosystem is affected and migration tooling will exist at ecosystem scale.
 
 ---
 
@@ -283,7 +296,7 @@ These are the exact properties the crowdfund contract depends on. Test compatibi
 | No revert on zero-amount transfer | ARM follows standard OZ ERC-20 behavior: `transfer(addr, 0)` succeeds. However, the crowdfund contract's `claim()` requires `allocations[msg.sender] > 0` — zero-allocation participants claim refunds via `claimRefund()`, not `claim()`. So zero-amount ARM transfers do not arise in the crowdfund integration path. |
 | Crowdfund contract is whitelisted | Can send ARM while global transfers are restricted |
 | Treasury is whitelisted | Can receive ARM sweeps via `withdrawUnallocatedArm()` while restricted |
-| `claim(delegate)` records delegation on ARM contract | The crowdfund contract calls `ARM.transfer(participant, amount)` then `ARM.delegateOnBehalf(participant, delegatee)` atomically within `claim()`. The ARM token must expose `delegateOnBehalf()` callable only by the crowdfund contract (see §6.1). Per GOVERNANCE.md: "ARM tokens cannot be claimed without simultaneously designating a delegatee." |
+| `claim(delegate)` records delegation on ARM contract | The crowdfund contract calls `ARM.transfer(participant, amount)` then `ARM.delegateOnBehalf(participant, delegatee)` atomically within `claim()`. `delegateOnBehalf()` is callable by the crowdfund contract and the revenue-lock contract (both set immutably in constructor; see §6.1). Per GOVERNANCE.md: "ARM tokens cannot be claimed without simultaneously designating a delegatee." |
 | Delegation is effective immediately | After `claim()`, the participant's ARM is delegated at the next block's checkpoint |
 | Unclaimed ARM has no voting power | ARM sitting in the crowdfund contract is not delegated and contributes zero to quorum |
 
@@ -333,7 +346,7 @@ These must hold at all times. Auditors should verify each.
 | **No pause** | No function can halt all token operations. |
 | **Transfer gate is one-way** | Once `setTransferable(true)` is called, it cannot be reversed. |
 | **Whitelist is immutable** | Constructor-set. No function can add or remove whitelisted addresses post-deployment. |
-| **`delegateOnBehalf` access is immutable** | Only the crowdfund contract address (set in constructor) can call `delegateOnBehalf()`. No function can change this. |
+| **`delegateOnBehalf` access is immutable** | Only the crowdfund contract and the revenue-lock contract (both set immutably in constructor) can call `delegateOnBehalf()`. No function can change this. |
 | **Proposal bonds inactive pre-transfer-unlock** | Governance operates on proposal threshold only (12,000 delegated ARM) while transfers are restricted. Bond mechanism activates post-transfer-unlock. |
 | **Revenue schedule is immutable** | The revenue milestone table cannot be changed by governance or any admin. |
 | **Revenue-lock contracts cannot delegate** | Lock contracts have no code path that calls `delegate()` on the ARM token. Unreleased team/airdrop ARM is structurally vote-inert. |
@@ -345,14 +358,17 @@ These must hold at all times. Auditors should verify each.
 
 ## 13. Open Questions
 
-**No open questions remain.** All previously open items have been resolved in this spec.
+**No open questions remain.**
 
 **Resolved:**
 - Zero-amount transfers: follow standard OZ behavior (allow). `claim()` requires `allocations > 0` so the path doesn't arise. (§10)
 - Whitelist mechanism: constructor-set, immutable, no post-deploy mutability. (§5)
 - Revenue measurement: governance-attested cumulative counter per GOVERNANCE.md. (§5.1)
-- Claim-time delegation: `delegateOnBehalf(account, delegatee)` callable only by crowdfund contract. (§6.1)
+- Claim-time delegation: `delegateOnBehalf(account, delegatee)` callable by crowdfund contract and revenue-lock contract. (§6.1)
+- Release-time delegation: `release(delegatee)` on the revenue-lock contract atomically transfers + delegates, matching the crowdfund pattern. (§6.1)
 - EIP-2612 `permit()`: included at launch. (§4)
+- Steward delegation ban: dropped — stewards may receive delegation. (GOVERNANCE.md)
+- Upgradeability: non-upgradeable. No proxy. Invariants in §12 are unconditional. (§9)
 
 ---
 
@@ -376,16 +392,17 @@ ARM Token Contract
   │     ├── loadArm() checks balanceOf
   │     ├── claim() calls transfer + delegateOnBehalf
   │     └── withdrawUnallocatedArm() calls transfer to treasury
-  ├── consumed by: Governor Contract (post-transfer-unlock only)
+  ├── consumed by: Governor Contract (post-transfer-unlock only for bonds)
   │     ├── reads checkpoints for voting power (works pre-unlock)
   │     ├── reads delegation state (works pre-unlock)
   │     ├── proposal bonds require transfer (works only post-unlock)
-  │     └── calls setTransferable(true) via proposal execution
+  │     ├── calls setTransferable(true) via proposal execution
+  │     └── wind-down trigger calls setTransferable(true) as side effect
   ├── consumed by: Revenue-Lock Contract (single shared contract)
   │     ├── holds all team + airdrop ARM (2.4M)
   │     ├── tracks per-beneficiary allocations internally
-  │     ├── releases proportional to governance-attested revenue counter
-  │     └── Knowable Safe can reassign its allocation to new recipients
+  │     ├── release(delegatee) calls transfer + delegateOnBehalf
+  │     └── releases proportional to governance-attested revenue counter
   └── consumed by: Monitoring
         └── reads Transfer, DelegateChanged, TransferabilityEnabled, RevenueUpdated events
 ```
