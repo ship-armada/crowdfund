@@ -27,7 +27,7 @@ ARM is the governance and ownership token of the Armada protocol. This document 
 
 ## 3. Genesis Allocation
 
-All ARM is minted at deployment to the deployer address. Distribution to recipients is handled by the deployment script via standard `transfer()` calls after the token contract is deployed — the same pattern as the crowdfund's `loadArm()`. The constructor sets name, symbol, mints total supply to the deployer, and stores the immutable configuration (whitelist addresses, treasury address).
+All ARM is minted at deployment to the deployer address. Distribution to recipients is handled by the deployment script via standard `transfer()` calls after the token contract is deployed — the same pattern as the crowdfund's `loadArm()`. The constructor sets name, symbol, mints total supply to the deployer, and stores the immutable configuration: whitelist addresses (crowdfund, treasury, revenue-lock), treasury address (for delegation revert), and `delegateOnBehalf` caller addresses (crowdfund, revenue-lock).
 
 **Deployment-time distribution (via deployment script, not constructor):**
 
@@ -115,8 +115,6 @@ Three constructor parameters. The full set of whitelisted addresses is known bef
 |---|---|
 | Governance contract(s) | Proposal bonds (per GOVERNANCE.md: 1,000 ARM, returned after lock period) require a holder to transfer ARM to the governance contract. During RESTRICTED state, non-whitelisted holders cannot transfer — so bonds are technically impossible. But bonds are also economically meaningless before transfer unlock: "losing access" to non-transferable ARM has zero opportunity cost. Bonds activate naturally once governance enables transfers, at which point all addresses can transfer and no whitelist is needed. **Pre-transfer-unlock governance operates on proposal threshold only (12,000 delegated ARM) — no bond required.** This avoids a chicken-and-egg problem: the proposal to enable transfers must itself be creatable without a bond. The governor contract's authority to call `setTransferable(true)` is a function access-control check, not a transfer-whitelist issue — see §8 transfer gate controller role. |
 | Knowable Safe | The Safe is a beneficiary in the revenue-lock contract — same as any other team member, just with a larger allocation. ARM is released to the Safe's wallet per the milestone schedule. Future contributor allocations are handled off-chain (token agreements between Knowable and contributors); once ARM is in the Safe's wallet and global transfers are enabled, Knowable distributes via standard transfers. No whitelist needed. |
-
-### What unlocks transfers
 
 ### What unlocks transfers
 
@@ -279,7 +277,7 @@ The ARM token contract is not upgradeable. There is no proxy, no UUPS, no diamon
 
 **Rationale:** The ARM token is the root of the system — the governor, revenue-lock contract, and all downstream contracts reference it by address. Upgradeability would make every invariant in §12 conditional on governance not voting to change them, weakening the core trust guarantee. The custom surface area beyond battle-tested OZ primitives is small (~50 lines — see below), making the probability of a critical bug low enough to accept the migration cost in a worst case over the trust cost of upgradeability. ARM does not enter the shielded pool (it's a governance/ownership token, not a payment asset), so token migration would not affect shielded notes.
 
-**Worst-case recovery path:** Deploy a new ARM token with fixed code, snapshot balances, coordinate migration. Disruptive but feasible. If the OZ base contracts have a critical vulnerability, the entire ERC20Votes ecosystem is affected and migration tooling will exist at ecosystem scale.
+**Worst-case recovery path:** Deploy a new ARM token with fixed code, snapshot balances, coordinate migration. Every contract that references the ARM token address (governor, revenue-lock, and any future integrations) would also need to be updated or redeployed to point to the new token. Disruptive but feasible — the scope of downstream updates depends on the final architecture and should be assessed once Ian settles the contract dependency graph.
 
 ---
 
