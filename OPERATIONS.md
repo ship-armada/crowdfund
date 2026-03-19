@@ -153,7 +153,7 @@ Record: `loadArm_tx = [hash]`
 
 **Execute only once `block.timestamp ≥ openTimestamp` and the week-1 window is active.**
 
-See §4 (Week-1 operating cadence) for the full seed addition procedure. The first batch of seeds should be added as soon as `openTimestamp` is reached and the week-1 window is active, before announcing the sale.
+See §4 (Week-1 operating cadence) for the full seed addition procedure. The first batch of seeds should be added immediately once the week-1 window is active (`block.timestamp ≥ openTimestamp`), before announcing the sale.
 
 ### Step 7: Issue launch-team placements (if any are pre-planned)
 
@@ -262,18 +262,20 @@ After commitment deadline passes (day 21+), before calling `finalize()`:
 
 ## 6. Finalization Procedure
 
-### Decision: single-tx vs phased
+### Settlement mode
 
-**Run gas estimation first:**
-```
-eth_estimateGas({ to: crowdfundContract, data: finalize_calldata })
-```
+The settlement mode (single-tx vs phased) is determined during development and gas testing, not by the operator at finalization time. The deployed contract either emits settlement events during `finalize()` (single-tx) or defers them to `emitSettlement()` (phased). The selection mechanism is implementation-defined (see `CROWDFUND.md` Gas Considerations).
 
-If estimated gas < 25M: use single-tx finalization.
-If estimated gas > 25M: use phased finalization.
-If `eth_estimateGas` reverts: check preconditions; do not proceed.
+**Before the commitment window opens, confirm which mode the deployed contract uses and record it:**
 
-Document the decision in the decision log (§10).
+| Mode | How `finalize()` behaves | What the operator does after |
+|---|---|---|
+| **Single-tx** | Emits `Finalized` + `Allocated` + `AllocatedHop` in one transaction | Verify events (Path A Step 3). `emitSettlement()` is not available. |
+| **Phased** | Emits only `Finalized`; stores allocations | Call `emitSettlement()` in batches (Path B Step 2). |
+
+**Gas estimation is still useful** — run `eth_estimateGas` before calling `finalize()` to confirm the transaction will succeed within the block gas limit. If it reverts or exceeds 30M, investigate before proceeding.
+
+Document the confirmed mode in the decision log (§10).
 
 ---
 
@@ -401,9 +403,9 @@ Record: `cancel_tx = [hash]`, `block = [number]`, `rationale = [description]`
 | | |
 |---|---|
 | **Actor** | Treasury |
-| **Action** | Record `USDC.balanceOf(treasury)` immediately before calling `finalize()` (pre-finalization baseline). After finalization, verify that `USDC.balanceOf(treasury)` increased by exactly `netProceeds` from the `Finalized` event. Compare the delta — not the absolute balance — to account for any pre-existing USDC the treasury may hold from other sources. |
+| **Action** | Record `USDC.balanceOf(treasury)` **before** calling `finalize()`. After finalization, verify the balance increased by exactly `netProceeds` from the `Finalized` event. Do not compare against the absolute post-finalization balance — the treasury may hold USDC from other sources. |
 | **Preconditions** | Successful finalization (not refundMode) |
-| **Fallback** | If delta does not match `netProceeds`: investigate immediately; do not transfer or use treasury funds until reconciled |
+| **Fallback** | If proceeds delta mismatch: investigate immediately; do not transfer or use until reconciled |
 
 ### Unsold ARM sweep
 
@@ -508,15 +510,17 @@ When `block.timestamp > finalization_timestamp + (3 * 365 * 24 * 3600)`:
 
 ---
 
-### 9.6 Gas too high for single-tx finalization
+### 9.6 Gas too high for finalization
 
 **Detection:** `eth_estimateGas` for `finalize()` exceeds block gas limit, or `finalize()` tx reverts with out-of-gas.
 
-**Action:** Switch to phased finalization (§6, Path B). This is a planned fallback, not a failure.
+**If the contract was deployed in phased mode:** This is expected. `finalize()` stores allocations without emitting settlement events. Proceed to §6, Path B to emit settlement in batches via `emitSettlement()`.
 
-If `finalize()` was already submitted and ran out of gas, the transaction reverted atomically — no state was written. Verify `finalized == false` on-chain.
+**If the contract was deployed in single-tx mode and `finalize()` reverts with out-of-gas:** The transaction reverted atomically — no state was written. Verify `finalized == false` on-chain. This means the deployed contract cannot finalize with the current participant count. Options:
+- If the implementation supports automatic fallback (gas-sensitive branching): retry with phased behavior enabled
+- If the implementation uses a compile-time mode flag: redeployment with phased mode is required
 
-**How phased mode works:** phased finalization is not a separate contract mode — it is the same `finalize()` function called with the understanding that `emitSettlement()` will be used afterward to emit settlement events in batches. The distinction is operational: if single-tx `finalize()` runs out of gas, call `finalize()` again with sufficient gas to complete the allocation computation and storage writes (without worrying about event emission gas). If `finalize()` succeeds but emits no `Allocated` events, that signals phased mode is in effect — proceed with `emitSettlement()` batches. If the contract was not compiled with phased mode support (i.e. `emitSettlement()` does not exist), redeployment would be required — verify this capability before launch.
+**Prevention:** Gas testing during development should determine the mode before deployment. The implementation test spec (S16: maximum network gas fixture) exists specifically to catch this.
 
 ---
 
@@ -571,16 +575,16 @@ Every irreversible action must be logged here before it is executed. This is the
 
 ### launchTeamInvite() log
 
-| # | Timestamp | Actor | Invitee address | Invitee Hop (fromHop + 1) | TX hash | Rationale | Budget remaining |
+| # | Timestamp | Actor | Invitee address | Invitee hop (fromHop + 1) | TX hash | Rationale | Budget remaining |
 |---|---|---|---|---|---|---|---|
 | 1 | | | | | | | |
 | ... | | | | | | | |
 
-### Phased settlement decision log
+### Settlement mode confirmation log
 
-| Timestamp | Actor | Gas estimate | Decision | Rationale |
+| Timestamp | Actor | Deployed mode | Gas estimate at max network | Rationale |
 |---|---|---|---|---|
-| | | | single-tx / phased | |
+| | | single-tx / phased | | |
 
 ### cancel() decision log
 
@@ -634,7 +638,7 @@ Every irreversible action must be logged here before it is executed. This is the
 | `capped_demand ≥ $1,000,000` (else refunds auto-available) | ☐ | Ops |
 | `finalized == false` | ☐ | Ops |
 | `cancelled == false` | ☐ | Ops |
-| Gas estimate run and single-tx vs phased decision documented | ☐ | Ops |
+| Deployed settlement mode confirmed (single-tx or phased) and gas estimate verified | ☐ | Ops |
 | Treasury standing by to verify proceeds | ☐ | Treasury |
 | Participant announcement drafted for both success and refundMode outcomes | ☐ | Ops |
 
