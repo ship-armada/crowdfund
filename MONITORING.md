@@ -87,9 +87,10 @@ Monitoring derives the current lifecycle phase from events and timestamps.
 | **ARMED / PRE-OPEN** | `ArmLoaded` emitted; `now < openTimestamp` |
 | **OPEN / WEEK 1** | `ArmLoaded`; `openTimestamp ≤ now ≤ week1Deadline` |
 | **OPEN / WEEKS 2–3** | `ArmLoaded`; `week1Deadline < now ≤ commitmentDeadline` |
-| **DEADLINE PASSED / NOT FINALIZED** | `now > commitmentDeadline`; no `Finalized`; no `Cancelled` |
-| **FINALIZED / SUCCESS / SINGLE-TX** | `Finalized(refundMode=false)`; `Allocated` + `AllocatedHop` emitted in the same transaction as `Finalized`. `SettlementComplete` is **never emitted** in single-tx mode — its presence is only relevant in phased mode. A monitoring system should not wait for `SettlementComplete` after detecting single-tx settlement. |
-| **FINALIZED / SUCCESS / PHASED IN PROGRESS** | `Finalized(refundMode=false)`; `Allocated` events absent from the same transaction; `SettlementComplete` not yet seen |
+| **DEADLINE PASSED / QUALIFIED / NOT FINALIZED** | `now > commitmentDeadline`; derived `capped_demand ≥ MINIMUM_RAISE`; no `Finalized`; no `Cancelled` |
+| **DEADLINE PASSED / SUB-MINIMUM / REFUNDS AVAILABLE** | `now > commitmentDeadline`; derived `capped_demand < MINIMUM_RAISE`; no `Finalized`; no `Cancelled`. Refunds auto-available — do NOT call `finalize()`. |
+| **FINALIZED / SUCCESS / SINGLE-TX** | `Finalized(refundMode=false)`; `Allocated` + `AllocatedHop` in the **same transaction** as `Finalized`. `SettlementComplete` is **never** emitted in this mode — do not wait for it. |
+| **FINALIZED / SUCCESS / PHASED IN PROGRESS** | `Finalized(refundMode=false)`; `SettlementComplete` not yet seen |
 | **FINALIZED / SUCCESS / SETTLEMENT COMPLETE** | `SettlementComplete` seen |
 | **FINALIZED / REFUND MODE** | `Finalized(refundMode=true)` |
 | **CANCELLED** | `Cancelled` emitted |
@@ -137,7 +138,7 @@ This is **intentional design behavior** under the `participation_slots[(address,
 
 Post-finalization, track:
 
-- Count of `Allocated` events emitted vs **expected participant count** (defined as: count of unique addresses with at least one `Committed` event — every such address receives an `Allocated` event on the success path, including zero-ARM / full-refund addresses)
+- Count of `Allocated` events emitted vs expected participant count (= count of unique addresses with at least one `Committed` event — includes zero-ARM addresses on the success path)
 - Count of `AllocatedHop` events emitted
 - Settlement invariant check for sampled addresses: `sum(AllocatedHop.armAmount) == Allocated.totalArmAmount`
 - `SettlementComplete` seen / not seen (phased mode only)
@@ -204,7 +205,7 @@ Post-finalization, track:
 
 | Field | Value |
 |---|---|
-| **Signal** | COUNT of ROOT-issued `Invited` events, filtered by `hop` field (where `hop` in the `Invited` event is the invitee's hop level, not `fromHop` — so `hop == 1` counts hop-1 placements and `hop == 2` counts hop-2 placements) |
+| **Signal** | COUNT of ROOT-issued `Invited` events, by `hop` field (where `hop` in the `Invited` event is the invitee's hop level — not the `fromHop` parameter used when calling `launchTeamInvite`) |
 | **Condition** | Hop-1 or hop-2 placement count reaches 80%, 90%, 100% of budget (60 each) |
 | **Severity** | P2 at 80%/90%; P1 at 100% |
 | **Meaning** | Week-1 discretionary placement capacity running low |
@@ -419,7 +420,7 @@ Alert A10 is P1 (not P0) because operators must shift participant guidance immed
 Absence of `Allocated` / `AllocatedHop` events immediately after `Finalized(refundMode=false)` is not automatically a bug. The correct sequence is:
 
 1. Alert A12 fires (successful finalization — P3)
-2. If `Allocated` events are absent from the same transaction as `Finalized`: Alert A13 fires (phased settlement started — P2)
+2. If `Allocated` events are absent from the same transaction: Alert A13 fires (phased settlement started — P2)
 3. Operators begin calling `emitSettlement()` batches
 4. If `SettlementComplete` doesn't arrive within threshold: Alert A14 fires (stalled — P0)
 5. On `SettlementComplete`: Alert A15 fires (complete — P3)
