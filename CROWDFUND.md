@@ -331,11 +331,11 @@ Crowdfund tokens are not revenue-gated, but voting power only becomes active onc
 
 **Early-claim governance risk.** Voting power uses Compound-style point-in-time checkpointing — there is no time-weighted average. An address that claims and delegates immediately after finalization has its full balance active with no averaging period. Quorum at proposal creation is measured against only the ARM that has been claimed and delegated by that block. If very few participants have claimed, a single early claimer with 12,000+ ARM could meet proposal threshold and create a vote where quorum is a fraction of the full crowdfund supply. The 48-hour proposal delay and 7-day quiet period are the only buffers. Participants are strongly encouraged to claim and delegate promptly after finalization.
 
-**Claim deadline: 3 years from finalization.** The deadline is fixed and cannot be extended — it is a predeclared term of participation, not a governance parameter.
+**Claim deadline: 3 years from finalization.** The deadline is fixed and cannot be extended — it is a predeclared term of participation, not a governance parameter. Exact boundary: `claim()` is permitted when `block.timestamp <= finalizationTimestamp + 3 years`; `withdrawUnallocatedArm()` may sweep unclaimed ARM only when `block.timestamp > finalizationTimestamp + 3 years`.
 
 **`withdrawUnallocatedArm()` eligibility — three windows:**
 - **Immediately post-finalization:** sweeps `MAX_SALE - allocated_arm` — all ARM not sold to any participant, including (in a base crowdfund) the 600,000 ARM preloaded for potential expansion that was never needed.
-- **After the 3-year claim deadline:** sweeps any ARM still in the contract — allocated-but-never-claimed participant allocations.
+- **After the 3-year claim deadline (`block.timestamp > finalizationTimestamp + 3 years`):** sweeps any ARM still in the contract — allocated-but-never-claimed participant allocations.
 - **After `cancel()`:** sweeps all preloaded ARM (1,800,000) — the crowdfund is in cancelled state, not finalized, so the function must check `cancelled` as an additional eligibility condition alongside `finalized`.
 
 All three send to the immutable treasury address. The function may be called at any time; it sweeps whatever is currently eligible under the above rules.
@@ -523,17 +523,17 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 
 | Function | Caller | Parameters | Preconditions | Effects |
 |---|---|---|---|---|
-| `loadArm()` | Anyone (once) | — | Contract holds ≥ MAX_SALE ARM; not already called | Sets ARM-loaded flag; enables commitment window; emits `ArmLoaded` |
-| `addSeed(address)` | Launch team | Seed address | ARM loaded; week 1 only; seed count < 150; not cancelled; not finalized | Adds address as hop-0 node; records edge from ROOT; emits `SeedAdded`; decrements seed budget |
+| `loadArm()` | Anyone (once) | — | Contract holds ≥ MAX_SALE ARM; not already called | Sets ARM-loaded flag; arms the sale (commitment window opens at configured `openTimestamp`, not at the moment `loadArm()` is called); emits `ArmLoaded` |
+| `addSeed(address)` | Launch team | Seed address | ARM loaded; week 1 only; seed count < 150; address not already a seed; not cancelled; not finalized | Adds address as hop-0 node; records edge from ROOT; emits `SeedAdded`; decrements seed budget |
 | `launchTeamInvite(invitee, fromHop)` | Launch team | Target address, inviter's hop (0 or 1; invitee joins at `fromHop + 1`) | ARM loaded; week 1 only; budget remaining for target hop; not cancelled; not finalized | Records invite edge from ROOT to invitee at `fromHop + 1`; emits `Invited(ROOT, invitee, fromHop + 1, 0)`; decrements launch team budget |
-| `commit(hop, amount)` | Participant | Hop level, USDC amount | ARM loaded; pre-deadline; not cancelled; not finalized; address holds at least one participation slot at this hop (hop-0 slots from `SeedAdded`; hop-1/hop-2 slots from `Invited`) | Records commitment; transfers USDC to escrow; emits `Committed` |
+| `commit(hop, amount)` | Participant | Hop level, USDC amount | ARM loaded; pre-deadline; not cancelled; not finalized; `amount > 0`; address holds at least one participation slot at this hop (hop-0 slots from `SeedAdded`; hop-1/hop-2 slots from `Invited`) | Records commitment; transfers USDC to escrow; emits `Committed` |
 | `invite(invitee, fromHop)` | Inviter | Target address, inviter's hop | ARM loaded; pre-deadline; not cancelled; not finalized; caller has available slots at `fromHop` | Records invite edge; creates a new participation slot for invitee at `fromHop + 1` (increases invitee's cap by `HOP_CAP[fromHop + 1]`); emits `Invited(caller, invitee, fromHop + 1, 0)`; decrements inviter's slot count at `fromHop` |
-| `commitWithInvite(inviter, fromHop, nonce, deadline, signature, amount)` | Invitee | Inviter address, inviter's hop, nonce, deadline, EIP-712 signature, USDC amount | Valid EIP-712 + EIP-1271 signature; `nonce > 0`; `block.timestamp ≤ deadline`; nonce not used/revoked; inviter has available slots at `fromHop`; ARM loaded; pre-deadline; not cancelled; not finalized; USDC approved | Records invite edge + commitment atomically; creates a new participation slot for invitee at `fromHop + 1`; transfers USDC to escrow; emits `Invited(inviter, caller, fromHop + 1, nonce)` + `Committed(caller, fromHop + 1, amount)`; consumes nonce; decrements inviter's slot count |
+| `commitWithInvite(inviter, fromHop, nonce, deadline, signature, amount)` | Invitee | Inviter address, inviter's hop, nonce, deadline, EIP-712 signature, USDC amount | Valid EIP-712 + EIP-1271 signature; `nonce > 0`; `amount > 0`; `block.timestamp ≤ deadline`; nonce not used/revoked; inviter has available slots at `fromHop`; ARM loaded; pre-deadline; not cancelled; not finalized; USDC approved | Records invite edge + commitment atomically; creates a new participation slot for invitee at `fromHop + 1`; transfers USDC to escrow; emits `Invited(inviter, caller, fromHop + 1, nonce)` + `Committed(caller, fromHop + 1, amount)`; consumes nonce; decrements inviter's slot count |
 | `revokeInviteNonce(nonce)` | Inviter | Nonce to revoke | `nonce > 0`; nonce not already consumed or revoked | Marks nonce permanently revoked; emits `InviteNonceRevoked` |
 | `finalize()` | Anyone | — | Post-deadline; not finalized; not cancelled; `capped_demand ≥ MINIMUM_RAISE` | Computes allocations; records per-address allocations and refund amounts; sets `finalized = true`; transfers net proceeds to treasury; emits `Finalized`. **Single-transaction mode (preferred):** also emits per-address `Allocated` + `AllocatedHop` events in the same transaction. **Phased mode (fallback):** emits only `Finalized`; settlement events are emitted later via `emitSettlement()`. **RefundMode branch:** if `net_proceeds < MINIMUM_RAISE`, sets both `finalized = true` and `refundMode = true`; no treasury transfer; no allocation/refund recording; emits `Finalized(refundMode=true)` only — no `Allocated` or `AllocatedHop` in either mode. |
 | `emitSettlement(startIndex, count)` | Anyone | Start index, batch size | Phased fallback only. `finalized == true`; `refundMode == false`; settlement events not yet fully emitted; `startIndex` must be monotonically advancing (batches are non-overlapping and sequential — no re-emission or out-of-order) | Emits `Allocated` + `AllocatedHop` events for the specified batch. `SettlementComplete` emitted exactly once, automatically when the final batch completes. No state changes beyond tracking emission progress. |
 | `claimRefund()` | Participant | — | `refundMode == true` OR (`post-deadline AND !finalized AND capped_demand < MINIMUM_RAISE`) OR `cancelled == true`; refund not already claimed | Transfers refund USDC to caller; emits `RefundClaimed` |
-| `claim(delegate)` | Participant | Delegate address | `finalized == true`; `refundMode == false`; within 3-year deadline; not already claimed | Transfers allocated ARM to caller; records delegation; emits `ArmClaimed` |
+| `claim(delegate)` | Participant | Delegate address | `finalized == true`; `refundMode == false`; `block.timestamp <= finalizationTimestamp + 3 years`; not already claimed | Transfers allocated ARM to caller; records delegation; emits `ArmClaimed` |
 | `cancel()` | Security Council | — | Not finalized | Sets `cancelled` permanently; emits `Cancelled` |
 | `withdrawUnallocatedArm()` | Anyone | — | `finalized == true` (sweeps unsold) OR post-3yr-deadline (sweeps unclaimed) OR `cancelled == true` (sweeps all 1.8M) | Transfers eligible ARM to immutable treasury address |
 
@@ -545,7 +545,7 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 
 | Event | Emitted by | Fields | Description |
 |---|---|---|---|
-| `ArmLoaded` | `loadArm()` | — | ARM pre-load verified; commitment window enabled |
+| `ArmLoaded` | `loadArm()` | — | ARM pre-load verified; sale armed (commitment window opens at configured `openTimestamp`) |
 | `SeedAdded` | `addSeed()` | `address seed` | New hop-0 node added; edge from ROOT |
 | `Invited` | `invite()`, `commitWithInvite()`, `launchTeamInvite()` | `address inviter, address invitee, uint8 hop, uint256 nonce` | New invite edge. `hop` is the invitee's hop level. `nonce` is 0 for direct invites, `> 0` for link-based invites — enables UI to track link consumption from events alone. |
 | `Committed` | `commit()`, `commitWithInvite()` | `address participant, uint8 hop, uint256 amount` | USDC committed at specific hop; amount is raw deposit (may exceed cap) |
@@ -556,7 +556,7 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 | `ArmClaimed` | `claim()` | `address participant, uint256 armAmount, address delegate` | ARM transferred; delegation recorded |
 | `RefundClaimed` | `claimRefund()` | `address participant, uint256 usdcAmount` | Refund USDC transferred |
 | `Cancelled` | `cancel()` | — | Crowdfund permanently cancelled by Security Council |
-| `SettlementComplete` | `emitSettlement()` (phased fallback only) | — | All `Allocated` and `AllocatedHop` events emitted. Emitted exactly once, automatically on final batch. Under single-transaction finalization, all settlement events arrive in the same block as `Finalized` and this event is not needed. |
+| `SettlementComplete` | `emitSettlement()` (phased fallback only) | — | All `Allocated` and `AllocatedHop` events emitted. Emitted exactly once, automatically on final batch. Under single-transaction finalization, all settlement events arrive in the same transaction as `Finalized` and this event is not needed. |
 
 **Event design principles:**
 - Every state change emits an event. The observer reconstructs full crowdfund state from events alone — no view functions required for the core display.
@@ -571,6 +571,8 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 **Phased finalization is acceptable as a fallback** if single-transaction gas exceeds block limits. In this case, `finalize()` computes and stores allocations in one transaction, and a separate `emitSettlement(startIndex, count)` function emits `Allocated` + `AllocatedHop` events in batches. If phased finalization is implemented:
 - `claim()` is available immediately after `finalize()` — the on-chain allocation records are written during `finalize()` regardless of whether settlement events have been emitted. Event emission is a transparency layer, not a gating condition for claims.
 - The UI must handle an intermediate state: settlement computed but events not yet fully emitted. Show "Settlement in progress — allocation data arriving" rather than incomplete data as final.
+
+**Settlement mode selection.** The contract must support both paths. `finalize()` always computes and stores allocations and refund amounts. Whether `finalize()` also emits settlement events in the same transaction is determined during development and gas testing — not at runtime by the operator. The selection mechanism (compile-time constant, constructor flag, or automatic gas-based branching) is implementation-defined. Both modes must produce identical economic outcomes — same `Allocated.totalArmAmount`, same `Allocated.totalRefundAmount`, same `AllocatedHop.armAmount` per (address, hop), same unsold ARM. Only event timing differs. `emitSettlement()` should revert if the contract was deployed in single-tx mode (settlement events already emitted by `finalize()`).
 - The final `emitSettlement()` batch emits `SettlementComplete()`. The observer treats `Finalized` without `SettlementComplete` as settlement-in-progress.
 
 ### EIP-712 Typed Data (Invite Links)
