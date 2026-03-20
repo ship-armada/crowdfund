@@ -46,9 +46,9 @@ Crowdfund participants can evaluate the full distribution (ie. who holds what an
 
 ### Team Allocation
 
-The team allocation (1,800,000 ARM, 15%) is distributed directly to individual locked wallets before the crowdfund opens, while ARM has no established market price. Each team member holds their own allocation independently, and there is no shared entity controlling the combined stake.
+The team allocation (1,800,000 ARM, 15%) is held in a single shared revenue-lock contract with per-beneficiary allocations. Each team member has their own entry in the beneficiary list and governs independently — the team does not vote as a bloc.
 
-A fluid pool of unallocated ARM will be held in a Knowable multisig for future contributors, role top-ups, and core team positions not yet filled at crowdfund open. Distributions from the fluid pool are subject to the same revenue-lock terms as all team allocations.
+The Knowable Safe appears in the beneficiary list like any other team member, with a larger allocation reserved for future contributors. Future contributor distributions are handled off-chain (token agreements between Knowable and contributors); once ARM is released to the Safe's wallet per the milestone schedule and global transfers are enabled, Knowable distributes via standard transfers. See REVENUE_LOCK.md for the full contract spec.
 
 **Properties:**
 - Revenue-locked transferability (same schedule as all team/airdrop tokens)
@@ -283,11 +283,11 @@ Real-time aggregate statistics show current commitment levels per hop throughout
 
 ### ARM Pre-Load Requirement
 
-**1,800,000 ARM (MAX_SALE) must be transferred to the crowdfund contract before the commitment window opens.** The contract enforces this with a deployment-time flag — the commitment function reverts until ARM is loaded and verified. This ensures participant claim records written at finalization are always backed by sufficient ARM.
+**1,800,000 ARM (MAX_SALE) must be present in the crowdfund contract before the commitment window opens.** The ARM token constructor mints 1,800,000 ARM directly to the crowdfund contract address (see ARM_TOKEN.md §3). The crowdfund contract enforces this with a deployment-time flag — the commitment function reverts until ARM is loaded and verified. This ensures participant claim records written at finalization are always backed by sufficient ARM.
 
 Deployment sequence:
-1. Deploy `ArmadaCrowdfund` with treasury address, ARM address, timing parameters
-2. Transfer 1,800,000 ARM to the contract
+1. Deploy `ArmadaCrowdfund` with treasury address, ARM address, timing parameters (ARM token uses CREATE2 precomputed address — see REVENUE_LOCK.md §3)
+2. Deploy ARM token — constructor mints 1,800,000 ARM directly to the crowdfund contract
 3. Call `loadArm()` to verify balance and set the flag
 
 `loadArm()` may be called before or at the configured open timestamp. If called in advance, the contract is armed but `commit()` reverts until the open timestamp is reached. `addSeed()` and `launchTeamInvite()` are similarly gated to the week-1 window (which begins at the open timestamp) and must not be called before the window is active.
@@ -457,14 +457,15 @@ If cumulative protocol revenue does not reach the threshold by the deadline, win
 
 ### Wind-down sequence
 
-1. Shielded pool enters withdraw-only mode (immediate — `shield()` and `transfer()` disabled; `unshield()` always available indefinitely with no deadline)
-2. 30-day waiting period before treasury distribution snapshot — not a deadline for unshielding, but a window for participants to get their affairs in order before the distribution is calculated
-3. Treasury distribution snapshot taken. Pro-rata entitlements are recorded. **All allocated crowdfund ARM counts** — both claimed and unclaimed — so unclaimed participants are not disadvantaged. ARM transfers remain unrestricted after wind-down.
-4. ARM holders claim their pro-rata share of non-ARM treasury assets (USDC, ETH, and any other tokens held). Participants who haven't yet claimed ARM may do so after wind-down and then separately claim their treasury entitlement. The 3-year ARM claim deadline continues to apply.
-5. Team and airdrop tokens have no treasury claim unless unlocked by revenue milestones before wind-down (zero-cost-basis exclusion for locked tokens)
-6. Treasury ARM has no distribution mechanism after wind-down — it remains locked permanently
+1. Wind-down triggers (automatic or governance vote). `triggerWindDown()` is permissionless — anyone can call it when conditions are met.
+2. ARM transfers are automatically enabled (`setTransferable(true)` called as part of the wind-down transaction)
+3. Shielded pool enters withdraw-only mode (immediate — `shield()` and shielded `transfer()` disabled; `unshield()` always available indefinitely with no deadline)
+4. Governance ends permanently — no new proposals, no steward proposals, no parameter changes
+5. Non-ARM treasury assets are swept to the redemption contract via permissionless `sweepToken(address)` calls (one per token; `sweepToken(ARM)` reverts — treasury ARM stays locked permanently)
+6. ARM holders deposit ARM into the redemption contract and receive their pro-rata share of non-ARM treasury assets. No snapshot, no deadline — deposit whenever you want. See GOVERNANCE.md §Wind-Down for the full redemption mechanism.
+7. Team and airdrop tokens have no treasury claim unless released via revenue milestones before wind-down. Unreleased ARM stays in the revenue-lock contract permanently.
 
-**Unclaimed ARM after wind-down.** Participants may claim their ARM at any time after wind-down (subject to the 3-year deadline). Claiming after wind-down is harmless — it simply arrives after the treasury distribution snapshot, but the participant's treasury entitlement is already recorded and claimable separately. No participant is penalised for claiming late.
+**Unclaimed ARM after wind-down.** Participants may claim their ARM at any time after wind-down (subject to the 3-year deadline). Once claimed, they can deposit it into the redemption contract to receive their treasury share. The 3-year ARM claim deadline continues to apply. Unclaimed ARM in the crowdfund contract is excluded from the redemption denominator, so it does not dilute redeemers.
 
 Those who paid have priority over those who received tokens at zero cost basis. Locked tokens only unlock if protocol earns revenue — if the protocol failed before earning revenue, those tokens stay locked and have no claim on remaining assets.
 
@@ -493,7 +494,7 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 | Invite graph | Fully public throughout the crowdfund | No post-finalization reveal step. Participants are joining a trust network — its shape should be legible from the start. Simplifies implementation; reinforces governance bootstrapping framing over token allocation framing |
 | Enactment delay | 48 hours standard; 7 days extended | Short delay is honest — without locking, market prices outcomes during voting anyway. Extended delay gives Security Council a meaningful veto window on high-impact proposals. |
 | Elastic expansion | Binary to 1.8M ARM | Accommodates demand without distorting any future fundraising |
-| Team allocation control | Individual locked wallets; fluid multisig for remainder | Individual ownership gives each team member independent governance standing; fluid pool preserves flexibility for future contributors without undermining $0 cost basis tax positioning |
+| Team allocation control | Single shared revenue-lock contract with per-beneficiary allocations; Knowable Safe is a beneficiary like any other team member | Each team member governs independently; Knowable Safe handles future contributors off-chain after release and global transfer unlock |
 | Pre-crowdfund distribution | Team + airdrop distributed before the crowdfund opens | Full transparency for funders |
 | Recurring payments | Not supported in v1 | Steward submits monthly batches instead |
 | Hop allocation model | Demand-driven ceilings, not fixed reserves | Capacity follows actual demand; no hop is guaranteed allocation it didn't earn; unused capacity rolls forward |

@@ -27,15 +27,19 @@ ARM is the governance and ownership token of the Armada protocol. This document 
 
 ## 3. Genesis Allocation
 
-All ARM is minted at deployment to the deployer address. Distribution to recipients is handled by the deployment script via standard `transfer()` calls after the token contract is deployed — the same pattern as the crowdfund's `loadArm()`. The constructor sets name, symbol, mints total supply to the deployer, and stores the immutable configuration: whitelist addresses (crowdfund, treasury, revenue-lock), treasury address (for delegation revert), and `delegateOnBehalf` caller addresses (crowdfund, revenue-lock).
+All ARM is minted directly to final recipients in the constructor. There is no deployer holding — the constructor calls `_mint()` for each recipient, so ARM never passes through an intermediate address.
 
-**Deployment-time distribution (via deployment script, not constructor):**
+**Constructor mints:**
 
 | Allocation | Amount | Recipient | Notes |
 |---|---|---|---|
 | Crowdfund contract | 1,800,000 (MAX_SALE) | Crowdfund contract address | Always 1.8M regardless of elastic expansion. Verified by `loadArm()`. |
 | Treasury | 7,800,000 | Treasury multisig | |
 | Team + Airdrop | 2,400,000 | Shared revenue-lock contract | See below. |
+
+The constructor also sets name, symbol, and stores the immutable configuration: whitelist addresses (crowdfund, treasury, revenue-lock), treasury address (for delegation revert), `delegateOnBehalf` caller addresses (crowdfund, revenue-lock), and `setTransferable` caller addresses (governor executor, wind-down contract).
+
+**No deployer in the whitelist.** The deployer address never holds ARM and is not whitelisted. This eliminates a trust-surface issue: if the deployer were permanently whitelisted (the whitelist is add-only), it could become a special pre-unlock transferable holder if it ever received ARM while transfers were restricted.
 
 **Revenue-lock contract architecture:** A single shared revenue-lock contract holds all team and airdrop ARM (2,400,000 total). The contract tracks per-beneficiary allocations internally:
 
@@ -93,15 +97,25 @@ ARM has a global transfer restriction at launch. This is the most important beha
 
 ### Whitelisted addresses in RESTRICTED state
 
-These addresses can send and receive ARM even while transfers are globally restricted. **The whitelist is set in the constructor and is immutable — no address can be added or removed post-deployment.** This is what makes the "no admin role" claim in §8 true.
+These addresses can send ARM even while transfers are globally restricted. **The initial whitelist is set in the constructor. Governance can add new addresses via extended proposal, but can never remove an existing whitelisted address.** Once whitelisted, always whitelisted.
+
+**Initial whitelist (constructor-set):**
 
 | Address | Why | Set how |
 |---|---|---|
 | Crowdfund contract | Must distribute ARM to claimants via `claim()` and `delegateOnBehalf()` | Constructor parameter |
-| Treasury | Must receive swept ARM via `withdrawUnallocatedArm()` | Constructor parameter |
+| Treasury | Must send ARM via governance proposals while restricted | Constructor parameter |
 | Revenue-lock contract | Must release team/airdrop ARM to beneficiaries as milestones are reached | Constructor parameter |
 
-Three constructor parameters. The full set of whitelisted addresses is known before deployment. If an address is wrong, the token contract must be redeployed — there is no admin function to modify the whitelist.
+**Post-deployment additions (governance-gated):**
+
+`addToWhitelist(address)` — callable only by governance (via extended proposal through timelock). Adds an address to the whitelist permanently. There is no `removeFromWhitelist`. This enables:
+- Recovery from a wrong address at deployment without redeploying the token
+- Future infrastructure contracts that need to transfer ARM while restricted
+
+**Trust surface acknowledgment:** In RESTRICTED state, whitelisted addresses can send ARM while everyone else cannot. Governance adding a new whitelisted address creates a partial transfer exception — that address can send ARM before global unlock. This is an intentional governance power gated by extended proposal (14-day vote, 30% quorum, 7-day execution delay, subject to SC veto). The spec does not constrain whitelist additions to contracts or infrastructure only — governance bears responsibility for evaluating the implications of each addition.
+
+**Why add-only:** The trust-critical property is that whitelisted contracts can never lose their ability to function. Crowdfund participants need to know `claim()` will always work. Team members need to know `release()` will always work. Add-only guarantees this — no governance vote can break an existing whitelisted contract.
 
 **Transfer restriction logic:** A transfer succeeds in RESTRICTED state if and only if the **sender** is a whitelisted address. Non-whitelisted holders cannot send ARM to anyone (including whitelisted addresses) until global transfer unlock. This means:
 - The crowdfund contract can send ARM to participants (sender = crowdfund, whitelisted)
@@ -125,6 +139,12 @@ Two paths, both irreversible:
 
 Both paths call the same `setTransferable(true)`. Once called, it cannot be reversed.
 
+**Authorization:** `setTransferable(true)` is callable only by two addresses, both set immutably in the constructor:
+- **Governor executor** (the timelock contract that executes passed governance proposals)
+- **Wind-down contract** (calls `setTransferable(true)` as part of `triggerWindDown()`)
+
+No other address can call this function. These addresses are constructor parameters alongside the whitelist, treasury, and `delegateOnBehalf` callers.
+
 ### What RESTRICTED means for holders
 
 - Crowdfund participants who `claim()` receive ARM in their wallet. They can delegate and vote. They cannot transfer or sell until governance unlocks transfers.
@@ -146,7 +166,7 @@ Team and airdrop ARM has a second restriction layer independent of the global tr
 
 **Key properties:**
 - Revenue milestones cannot be changed by governance. The schedule is immutable.
-- Revenue measurement source: **governance-attested cumulative counter** (per GOVERNANCE.md). Stablecoin fees (shield fees + yield fees) are directly countable as USDC arriving in the treasury. Non-stablecoin fees require a governance proposal to attest the USD value and credit it to the milestone counter — this avoids oracle dependencies while keeping the counter honest. Governance can expand the definition of qualifying revenue via standard proposal.
+- Revenue measurement source: **`RevenueCounter` contract** — a dedicated governance-upgradeable (UUPS) contract holding a single monotonic `recognizedRevenueUsd` counter (see GOVERNANCE.md §Revenue Counter Mechanism). Stablecoin fees are synced permissionlessly; non-stablecoin fees require a governance attestation. The revenue-lock contract reads this counter via an immutable proxy address set at deployment.
 - Team/airdrop tokens gain voting power proportionally as they unlock — at $0 revenue, team and airdrop ARM has zero voting power regardless of delegation.
 - Governance cannot override or accelerate team/airdrop unlocks. They unlock only via revenue.
 - These restrictions are independent of the global transfer gate. A team member whose ARM is 50% revenue-unlocked still cannot transfer until governance enables global transfers.
@@ -193,9 +213,9 @@ function delegateOnBehalf(address account, address delegatee) external
 
 **Crowdfund usage:** The crowdfund contract calls `ARM.transfer(participant, amount)` followed by `ARM.delegateOnBehalf(participant, delegatee)` within the same `claim()` transaction.
 
-**Revenue-lock usage:** The revenue-lock contract calls `ARM.transfer(beneficiary, releasedAmount)` followed by `ARM.delegateOnBehalf(beneficiary, delegatee)` within the same `release(delegatee)` transaction. This ensures team/airdrop ARM is delegated immediately upon release, matching the crowdfund claim pattern — no ARM enters circulation undelegated.
+**Revenue-lock usage:** The revenue-lock contract calls `ARM.transfer(beneficiary, releasedAmount)` followed by `ARM.delegateOnBehalf(beneficiary, delegatee)` within the same `release(delegatee)` transaction. This ensures team/airdrop ARM is delegated immediately upon release, matching the crowdfund claim pattern. Both launch circulation paths (crowdfund claim + revenue-lock release) produce atomically delegated ARM. Treasury distributions follow a separate path without atomic delegation — see GOVERNANCE.md §Delegation-at-circulation requirement.
 
-**Why this approach:** The alternative (requiring recipients to delegate in a separate transaction) breaks the GOVERNANCE.md requirement that all circulating ARM should be active in the governance denominator and creates a window of undelegated supply. The access control is narrow: only two contracts, both set immutably at deployment, can call this function. Auditors should verify the access control cannot be changed.
+**Why this approach:** The alternative (requiring recipients to delegate in a separate transaction) creates a window of undelegated supply after each claim or release. For the launch circulation paths (crowdfund claim + revenue-lock release), atomic delegation ensures ARM enters governance immediately. Treasury distributions follow a different path and may create undelegated ARM until recipients delegate manually — see GOVERNANCE.md §Delegation-at-circulation requirement for the full picture. The access control is narrow: only two contracts, both set immutably at deployment, can call this function. Auditors should verify the access control cannot be changed.
 
 ### Vote-inert ARM
 
@@ -251,17 +271,17 @@ The crowdfund contract relies on pre-minted ARM only. `loadArm()` verifies `bala
 
 | Role | Power | Exists at deploy? | Can be renounced? | Time-limited? | Intended disposition |
 |---|---|---|---|---|---|
-| Transfer gate controller | `setTransferable(true)` | Yes (governance + wind-down contract) | N/A — one-shot | No | Called once — either by governance proposal or as side effect of wind-down trigger. Function becomes no-op after first call. |
+| Transfer gate controller | `setTransferable(true)` | Yes (governor executor + wind-down contract, both set immutably in constructor) | N/A — one-shot | No | Called once — either by governor executor (governance proposal) or by wind-down contract (side effect of triggerWindDown). Function becomes no-op after first call. |
 | Revenue counter updater | Credits cumulative revenue to the milestone counter. Stablecoin fees are directly countable; non-stablecoin fees require governance attestation. | Yes (governance) | No — ongoing | No | Governance-controlled; no external oracle dependency |
 | Claim/release delegation caller | `delegateOnBehalf(account, delegatee)` | Yes (crowdfund contract + revenue-lock contract) | N/A — immutable | Naturally expires when crowdfund claims and lock releases complete | Set in constructor; only these two contracts can call |
+| Whitelist adder | `addToWhitelist(address)` — add-only, no removal | Yes (governance via extended proposal) | No — ongoing | No | Allows governance to whitelist new infrastructure contracts, recover from deployment address errors, or enable pre-unlock distribution channels. Cannot remove existing whitelisted addresses. |
 | Admin / owner | None | No | N/A | N/A | No admin role exists |
-| Whitelist modifier | None | No | N/A | N/A | Whitelist is constructor-set and immutable |
 | Minter | None | No | N/A | N/A | No minting capability |
 | Pauser | None | No | N/A | N/A | No pause function |
 | Upgrader | None | No | N/A | N/A | See §9 |
 | Metadata role | None | No | N/A | N/A | Name and symbol are immutable |
 
-**There is no admin role on the ARM token contract.** The only privileged operations are the transfer gate (governance-controlled, one-shot), the revenue counter (governance-attested), and `delegateOnBehalf` (crowdfund contract + revenue-lock contract, immutably set). The whitelist is constructor-set and immutable — three addresses: crowdfund contract, treasury, and the revenue-lock contract. No address can modify token behavior post-deployment beyond these narrow paths.
+**There is no unilateral admin role on the ARM token contract.** Privileged operations require governance (extended proposal for whitelist additions, standard for revenue attestation) or are one-shot (transfer gate). The initial whitelist is constructor-set (crowdfund, treasury, revenue-lock); governance can expand it but never shrink it. `delegateOnBehalf` callers are immutably set at deployment (crowdfund + revenue-lock). `setTransferable` callers are immutably set at deployment (governor executor + wind-down contract). No single address can modify token behavior unilaterally.
 
 ---
 
@@ -322,11 +342,9 @@ These are the exact properties the crowdfund contract depends on. Test compatibi
 |---|---|---|
 | `TransferabilityEnabled` | — | Emitted once when governance unlocks transfers. Irreversible. |
 
-### Revenue unlock events
+### Revenue events
 
-| Event | Fields | Notes |
-|---|---|---|
-| `RevenueUpdated` | `uint256 cumulativeRevenue, uint256 unlockedBps` | Emitted when cumulative revenue is updated, recording the new unlock percentage |
+`RevenueUpdated` is **not** an ARM token event. It is emitted by the `RevenueCounter` contract when cumulative revenue is updated (see GOVERNANCE.md §Revenue Counter Mechanism and REVENUE_LOCK.md). Monitoring reads it from the `RevenueCounter` address, not from the ARM token.
 
 ---
 
@@ -343,7 +361,7 @@ These must hold at all times. Auditors should verify each.
 | **No clawback** | No code path can move ARM out of a holder's wallet without their signature (transfer/approve). |
 | **No pause** | No function can halt all token operations. |
 | **Transfer gate is one-way** | Once `setTransferable(true)` is called, it cannot be reversed. |
-| **Whitelist is immutable** | Constructor-set. No function can add or remove whitelisted addresses post-deployment. |
+| **Whitelist is add-only** | Initial whitelist is constructor-set. Governance can add addresses (extended proposal) but can never remove. Once whitelisted, always whitelisted. |
 | **`delegateOnBehalf` access is immutable** | Only the crowdfund contract and the revenue-lock contract (both set immutably in constructor) can call `delegateOnBehalf()`. No function can change this. |
 | **Proposal bonds inactive pre-transfer-unlock** | Governance operates on proposal threshold only (12,000 delegated ARM) while transfers are restricted. Bond mechanism activates post-transfer-unlock. |
 | **Revenue schedule is immutable** | The revenue milestone table cannot be changed by governance or any admin. |
@@ -360,7 +378,7 @@ These must hold at all times. Auditors should verify each.
 
 **Resolved:**
 - Zero-amount transfers: follow standard OZ behavior (allow). `claim()` requires `allocations > 0` so the path doesn't arise. (§10)
-- Whitelist mechanism: constructor-set, immutable, no post-deploy mutability. (§5)
+- Whitelist mechanism: constructor-set initial list, governance can add (extended proposal) but never remove. (§5)
 - Revenue measurement: governance-attested cumulative counter per GOVERNANCE.md. (§5.1)
 - Claim-time delegation: `delegateOnBehalf(account, delegatee)` callable by crowdfund contract and revenue-lock contract. (§6.1)
 - Release-time delegation: `release(delegatee)` on the revenue-lock contract atomically transfers + delegates, matching the crowdfund pattern. (§6.1)
@@ -402,5 +420,5 @@ ARM Token Contract
   │     ├── release(delegatee) calls transfer + delegateOnBehalf
   │     └── releases proportional to governance-attested revenue counter
   └── consumed by: Monitoring
-        └── reads Transfer, DelegateChanged, TransferabilityEnabled, RevenueUpdated events
+        └── reads Transfer, DelegateChanged, TransferabilityEnabled events
 ```

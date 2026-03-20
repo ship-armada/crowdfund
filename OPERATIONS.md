@@ -73,7 +73,7 @@ Complete every item before calling the deploy script. Sign off with initials and
 |---|---|---|
 | ARM token decimals | 18 | ☐ |
 | USDC token decimals | 6 | ☐ |
-| ARM token `balanceOf(deployer)` ≥ 1,800,000 × 10^18 | `[balance]` | ☐ |
+| ARM token address matches CREATE2 precomputed address | `[address]` | ☐ |
 
 ### Infrastructure
 
@@ -123,15 +123,15 @@ Record: `contract_address = [address]`, `deploy_tx = [hash]`, `block = [number]`
 | **On-chain confirmation** | Returned value matches locally computed `keccak256(encode(domainFields))` |
 | **Fallback** | If mismatch: do NOT proceed. Contract has wrong domain separator — redeploy. |
 
-### Step 4: Transfer ARM to contract
+### Step 4: Verify ARM balance
 
 | | |
 |---|---|
-| **Actor** | Deployer (ARM holder) |
-| **Action** | Call `ARM.transfer(crowdfundContract, 1_800_000e18)` |
-| **Preconditions** | Step 3 complete; deployer holds ≥ 1,800,000 ARM |
+| **Actor** | Deployer |
+| **Action** | Verify `ARM.balanceOf(crowdfundContract)` = 1,800,000e18. The ARM token constructor mints directly to the crowdfund contract — no manual transfer needed. |
+| **Preconditions** | Step 3 complete; ARM token deployed (constructor minted 1.8M directly to crowdfund contract) |
 | **On-chain confirmation** | `ARM.balanceOf(crowdfundContract)` = 1,800,000e18 |
-| **Fallback** | If transfer fails: check deployer ARM balance; check gas |
+| **Fallback** | If balance is wrong: ARM token was deployed with incorrect constructor params. Redeploy ARM token. |
 
 ### Step 5: Load ARM
 
@@ -139,7 +139,7 @@ Record: `contract_address = [address]`, `deploy_tx = [hash]`, `block = [number]`
 |---|---|
 | **Actor** | Anyone (typically deployer) |
 | **Action** | Call `loadArm()` — verifies the ARM balance and sets the flag that arms the sale. The commitment window opens at the configured open timestamp, not at the moment `loadArm()` is called. If `loadArm()` is called before the open timestamp, the contract is armed but commitments will revert until the window opens. |
-| **Preconditions** | `ARM.balanceOf(crowdfundContract)` = 1,800,000e18 (Step 4 complete) |
+| **Preconditions** | `ARM.balanceOf(crowdfundContract)` = 1,800,000e18 (Step 4 verified) |
 | **On-chain confirmation** | `ArmLoaded` event emitted |
 | **Fallback** | If `loadArm()` reverts: check contract ARM balance equals MAX_SALE exactly; check `loadArm()` has not already been called |
 
@@ -603,7 +603,7 @@ Every irreversible action must be logged here before it is executed. This is the
 | All pre-launch checklist items signed off | ☐ | Deployer |
 | Contract deployed and verified | ☐ | Deployer |
 | EIP-712 domain separator verified | ☐ | Deployer |
-| 1,800,000 ARM available in deployer wallet; transfer to contract prepared | ☐ | Deployer |
+| ARM token deployed — constructor mints 1.8M ARM directly to crowdfund contract | ☐ | Deployer |
 | Observer and committer URLs confirmed working | ☐ | Ops |
 | Monitoring alerts active | ☐ | Ops |
 | Security Council reachability confirmed | ☐ | Ops |
