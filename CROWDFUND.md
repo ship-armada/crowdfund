@@ -58,7 +58,7 @@ The Knowable Safe appears in the beneficiary list like any other team member, wi
 **Constraints:**
 - Cannot change the revenue-lock schedule
 - Cannot pull from treasury or other allocations
-- Fluid pool distributions inherit the same unlock terms
+- Knowable Safe distributions inherit the same unlock terms
 
 ### Revenue-Gated Unlocks (Team + Airdrop)
 
@@ -311,34 +311,117 @@ No privileged action or separate function is required — the eligibility check 
 
 When `finalize()` is called:
 
-> These steps describe settlement outcomes, not mandatory EVM instruction order. Implementation must follow checks-effects-interactions: record all state changes before making external asset transfers.
+> `finalize()` writes only aggregate state — zero per-participant storage writes. Individual allocations are computed on-the-fly at `claim()` time using aggregate parameters stored by `finalize()` plus the participant's own commitment records (already on-chain from `commit()`). This is the lazy settlement architecture.
 
 1. Crowdfund size is determined (base or expanded, based on total capped demand)
-2. Per-hop ceilings are calculated
-3. Allocations are computed (pro-rata where oversubscribed; addresses at multiple hops receive ARM from each hop independently, accumulated into a single balance)
-4. Refund amounts are computed and recorded per address
-5. **Post-allocation minimum raise check:** if `net_proceeds < MINIMUM_RAISE ($1,000,000 USDC)`, the contract sets **both `finalized = true` and `refundMode = true`** and stops — no treasury transfer, no ARM allocation recording. Setting `finalized = true` permanently disables further calls to `finalize()` and `cancel()`. Any provisional allocation and refund amounts computed in steps 3–4 are discarded. **In this branch, every participant may call `claimRefund()` to withdraw their full deposited USDC** — not a pro-rata refund, but the complete raw amount they deposited. **`claim()` reverts when `refundMode == true` — no ARM allocations were recorded.** This scenario can occur at base size when hop-0 is oversubscribed and combined later-hop demand doesn't close the gap between hop-0's ceiling ($798k) and the minimum raise ($1M). It cannot occur after expansion, where hop-0's ceiling ($1,197k) already exceeds the minimum raise. This must not revert the transaction — a revert would leave the contract permanently stuck with no path to refunds.
-6. **Net USDC proceeds transfer immediately to treasury** — refund amounts are deducted first; only the net proceeds transfer
-7. ARM allocations are recorded on-chain for participants to claim
+2. **Per-hop effective ceilings are calculated via the waterfall pass:** hop-2 floor reserved first, hop-0 ceiling applied against the available pool, hop-0 leftover increases hop-1's effective ceiling, hop-1 leftover increases hop-2's effective ceiling. The stored `ceilings[hop]` values are the **final effective ceilings after the waterfall** — not the raw BPS ceilings from the hop table. These are the numbers `computeAllocation()` uses directly.
+3. **Per-hop aggregate demand is computed:** `finalize()` iterates all participants once to compute `hopDemand[hop]` — the sum of `effectiveUsdc(p, hop)` for all participants at that hop, where `effectiveUsdc(p, hop) = min(committed[p][hop], slotCount[p][hop] * HOP_CAP[hop])`. **Multiple slots per hop per address is a hard requirement** — the entire cap model, self-fill analysis, and `computeAllocation()` logic depend on `slotCount[p][hop]` being a counter that increments with each invite received. If the contract models caps as a single boolean "has access to this hop" rather than a slot count, this spec is incorrect and the allocation math must be redesigned.
+4. **Aggregate allocation is computed:** `totalAllocatedUsdc = sum(min(hopDemand[hop], ceilings[hop]))` across all hops. `totalAllocatedArm = totalAllocatedUsdc * ARM_PER_USDC_RATE`.
+5. **Post-allocation minimum raise check:** if `totalAllocatedUsdc < MINIMUM_RAISE ($1,000,000 USDC)`, the contract sets **both `finalized = true` and `refundMode = true`** and stops — no treasury transfer, no aggregate recording beyond the flags. Setting `finalized = true` permanently disables further calls to `finalize()` and `cancel()`. **In this branch, every participant may call `claimRefund()` to withdraw their full deposited USDC** — not a pro-rata refund, but the complete raw amount they deposited. **`claim()` reverts when `refundMode == true`.** This scenario can occur at base size when hop-0 is oversubscribed and combined later-hop demand doesn't close the gap between hop-0's ceiling ($798k) and the minimum raise ($1M). It cannot occur after expansion, where hop-0's ceiling ($1,197k) already exceeds the minimum raise. This must not revert the transaction — a revert would leave the contract permanently stuck with no path to refunds.
+6. **Aggregate state is written:** `finalized = true`, `finalizationTimestamp`, `saleSize`, `ceilings[]`, `hopDemand[]`, `totalAllocatedArm`, `totalArmTransferred = 0` (counter incremented by `claim()` when ARM is actually sent)
+7. **Net USDC proceeds transfer immediately to treasury** — `netProceeds = totalAllocatedUsdc` (USDC domain — computed directly from accepted USDC, not from `totalAllocatedArm * PRICE` which can diverge by rounding dust), transferred in the same transaction
 
-Refunds are pull-based — participants call `claimRefund()` once eligible (see Finalization section for the full three-condition eligibility rule, which includes pre-finalization and cancel-state paths). This avoids gas grief from iterating over all participants in a single transaction. Refunds do not expire.
+No per-participant allocation or refund amounts are written to storage. The only per-participant storage write in the entire settlement flow is `claimed[msg.sender] = true` inside `claim()`.
+
+### Canonical allocation computation
+
+`computeAllocation(address)` is a **required public view function** — the UI and observer both need the exact same logic path as `claim()`, minus side effects. Frontend/contract drift is prevented by having a single canonical computation.
+
+```
+computeAllocation(participant) → (uint256 armAmount, uint256 refundUsdc):
+
+  totalAcceptedUsdc = 0
+  totalCommittedUsdc = 0
+
+  for each hop where participant holds a slot:
+    committedUsdc = committed[participant][hop]
+    effectiveUsdc = min(committedUsdc, slotCount[participant][hop] * HOP_CAP[hop])
+    totalCommittedUsdc += committedUsdc
+
+    if hopDemand[hop] <= ceilings[hop]:
+      acceptedUsdc = effectiveUsdc
+    else:
+      acceptedUsdc = ceilings[hop] * effectiveUsdc / hopDemand[hop]  // floor division
+
+    totalAcceptedUsdc += acceptedUsdc
+
+  refundUsdc = totalCommittedUsdc - totalAcceptedUsdc
+  armAmount = totalAcceptedUsdc * ARM_PER_USDC_RATE  // floor
+
+  return (armAmount, refundUsdc)
+```
+
+Three explicit domains — no ambiguity between USDC and ARM:
+- **committedUsdc** — what the participant deposited (raw, may exceed cap)
+- **effectiveUsdc** — committedUsdc capped to slot allowance
+- **acceptedUsdc** — what counts toward their allocation (USDC domain, after pro-rata if oversubscribed)
+- **refundUsdc** — what they get back: `committedUsdc - acceptedUsdc` (USDC domain)
+- **armAmount** — derived from `acceptedUsdc` at the sale conversion rate (ARM domain)
+
+`computeAllocation()` always returns the **theoretical entitlement** regardless of timing or claim status. It is **pure deterministic math over finalized state**: no claim-order dependence, no mutable per-user inputs beyond the participant's own committed balances and slot counts, no dependence on current contract balances or other participants' claim status. This property makes auditing straightforward and eliminates interpretation ambiguity.
+
+**Implementer note:** The `ceilings[hop]` and `hopDemand[hop]` values used in `computeAllocation()` are stored by `finalize()` after the waterfall pass (see appendix pseudocode steps 3-6). They are the effective post-waterfall ceilings, not the raw BPS values from the hop table. Do not recompute the waterfall inside the view function.
+
+### Rounding
+
+- **`acceptedUsdc`**: floor division at participant level, per hop, then summed. A hop ceiling may not be fully allocated (floor of each participant's share leaves residual capacity). This is intentional — the dust is not distributed.
+- **`refundUsdc = committedUsdc - acceptedUsdc`**: because `acceptedUsdc` floors, refund effectively rounds up. Participant is never under-refunded.
+- **`armAmount = totalAcceptedUsdc * ARM_PER_USDC_RATE`**: floor. Participant never over-receives ARM.
+- **Dust sink:** treasury. Residual ARM (from rounding across all participants) becomes part of the unsold/sweepable pool.
+
+### Conservation invariants
+
+**Settlement-completion accounting identities** (hold once all participants have claimed — not standing invariants at arbitrary intermediate times):
+
+```
+sum(armTransferred[p] for all claimed p) + sweepableArm == 1,800,000 ARM
+  where sweepableArm = 1,800,000 - totalArmTransferred
+
+sum(refundUsdc[p] for all claimed p) + netProceeds == totalCommitted
+```
+
+**Standing invariants** (hold at all times after finalization):
+
+```
+totalArmTransferred <= totalAllocatedArm <= 1,800,000 ARM
+USDC balance in contract == totalCommitted - netProceeds - sum(refunds paid out)
+```
+
+### Order-independence
+
+All participant entitlements are fixed at `finalize()` time. Claims may occur in any order. No claim changes any other participant's entitlement. `computeAllocation()` is a pure function of the caller's commitments plus the aggregate parameters written by `finalize()`.
+
+### Claim mechanics
+
+`claim(delegate)` computes the caller's allocation on-the-fly, transfers ARM and/or refund USDC, and records delegation:
+
+- **ARM portion: subject to 3-year expiry.** ARM is transferred only when `block.timestamp <= finalizationTimestamp + 3 years`. `delegateOnBehalf(msg.sender, delegate)` only runs when ARM is actually transferred.
+- **Refund portion: always payable, no expiry.** The USDC refund component of a success-path claim has no deadline.
+- **`claimed[msg.sender] = true`** is set permanently regardless of what was transferred. A participant who claims after the 3-year deadline receives any refundable USDC but **permanently forfeits ARM entitlement** — this is an economically meaningful consequence, not just implementation behavior.
+- **`totalArmTransferred`** increments only when ARM is actually sent (not when entitlement is computed). This counter is distinct from `totalAllocatedArm` (theoretical aggregate): `totalAllocatedArm` is the sale allocation used by the observer and Finalized event; `totalArmTransferred` tracks actual delivery and is used by `withdrawUnallocatedArm()` to compute sweepable ARM.
+- **`nonReentrant`** modifier required — `claim()` makes external token transfers and a `delegateOnBehalf` call.
+- **Events:** `Allocated` emits `armTransferred` (actual ARM sent in this call, not theoretical entitlement), `refundUsdc` (actual USDC refund sent), and `delegate` (delegation target, or `address(0)` if no ARM transferred). `AllocatedHop` emits per-hop `acceptedUsdc` (theoretical, USDC domain — not affected by ARM expiry, since expiry affects transfer timing, not sale participation). Settlement invariant: `sum(AllocatedHop.acceptedUsdc) * ARM_PER_USDC_RATE >= Allocated.armTransferred` (equality holds within 3-year window; after expiry, `armTransferred` is 0 while per-hop acceptance is unchanged).
+
+`claimRefund()` remains exclusively for refundMode / cancel / pre-finalization paths. Success-path refunds go through `claim()`. **There is no refund-only path for the success case** — a participant who wants their USDC refund must call `claim()`, which also handles the ARM portion (transferring it within the 3-year window, or forfeiting it after expiry). This is a deliberate tradeoff: bundling refunds into `claim()` avoids a separate per-participant refund storage write in `finalize()` and keeps the lazy settlement architecture clean, at the cost of requiring every participant — even those with small oversubscription refunds — to engage the full claim path.
+
+Refunds are pull-based — participants call `claimRefund()` once eligible (see the three-condition eligibility rule above). This avoids gas grief from iterating over all participants in a single transaction. Refunds via `claimRefund()` do not expire.
 
 ARM claim remains a separate participant-initiated step (one transaction per claimant). USDC net proceeds flow to treasury at finalization regardless of whether participants have claimed their ARM or refunds.
 
 Crowdfund tokens are not revenue-gated, but voting power only becomes active once ARM is claimed and delegated. Allocated-but-unclaimed ARM is vote-inert regardless of any governance unlock proposal that passes.
 
-**Governance quiet period: 7 days after finalization.** No governance proposals may be submitted until day 8 post-finalization. This gives the community time to claim, delegate, and orient before governance begins. Any emergency during this window is handled by the Security Council (pause, veto, coordinated response) — it does not require a governance vote. The quiet period is a one-time bootstrapping measure and is itself governable.
+**Governance quiet period: 7 days after finalization.** No governance proposals may be submitted until day 8 post-finalization. This gives the community time to claim, delegate, and orient before governance begins. Any emergency during this window is handled by the Security Council (pause, veto, coordinated response) — it does not require a governance vote. The quiet period is a one-time bootstrapping measure — it is a constructor parameter that applies once and has no effect after expiry.
 
-**Early-claim governance risk.** Voting power uses Compound-style point-in-time checkpointing — there is no time-weighted average. An address that claims and delegates immediately after finalization has its full balance active with no averaging period. Quorum at proposal creation is measured against only the ARM that has been claimed and delegated by that block. If very few participants have claimed, a single early claimer with 12,000+ ARM could meet proposal threshold and create a vote where quorum is a fraction of the full crowdfund supply. The 48-hour proposal delay and 7-day quiet period are the only buffers. Participants are strongly encouraged to claim and delegate promptly after finalization.
+**Early-claim governance risk.** Voting power uses Compound-style point-in-time checkpointing — there is no time-weighted average. An address that claims and delegates immediately after finalization has its full balance active with no averaging period. Quorum at proposal creation is measured against circulating ARM at that block — which, immediately after finalization, is essentially only the ARM that has been claimed, since unclaimed ARM in the crowdfund contract and unreleased ARM in the revenue-lock contract are excluded from the denominator (see GOVERNANCE.md §Quorum denominator). If very few participants have claimed, a single early claimer with 12,000+ ARM could meet proposal threshold and create a vote where quorum is a fraction of the full crowdfund supply. The 48-hour proposal delay and 7-day quiet period are the only buffers. Participants are strongly encouraged to claim and delegate promptly after finalization. **This is an accepted design choice, not an unsolved problem** — additional mechanical buffers (e.g., time-weighted voting, minimum claimed supply before governance activates) would add complexity to the ARM token or governor that contradicts the "~50 lines of custom code on OZ primitives" constraint. The Security Council provides emergency response during this window if needed.
 
 **Claim deadline: 3 years from finalization.** The deadline is fixed and cannot be extended — it is a predeclared term of participation, not a governance parameter. Exact boundary: `claim()` is permitted when `block.timestamp <= finalizationTimestamp + 3 years`; `withdrawUnallocatedArm()` may sweep unclaimed ARM only when `block.timestamp > finalizationTimestamp + 3 years`.
 
-**`withdrawUnallocatedArm()` eligibility — three windows:**
-- **Immediately post-finalization:** sweeps `MAX_SALE - allocated_arm` — all ARM not sold to any participant, including (in a base crowdfund) the 600,000 ARM preloaded for potential expansion that was never needed.
-- **After the 3-year claim deadline (`block.timestamp > finalizationTimestamp + 3 years`):** sweeps any ARM still in the contract — allocated-but-never-claimed participant allocations.
+**`withdrawUnallocatedArm()` eligibility — three windows with time-conditional sweep amounts:**
+- **Immediately post-finalization, before 3-year deadline (`finalized == true && block.timestamp <= finalizationTimestamp + 3 years`):** sweeps `1,800,000 - totalAllocatedArm` — all ARM not allocated to any participant, including (in a base crowdfund) the 600,000 ARM preloaded for potential expansion that was never needed. Does not touch allocated-but-unclaimed ARM — participants may still claim.
+- **After the 3-year claim deadline (`finalized == true && block.timestamp > finalizationTimestamp + 3 years`):** sweeps `1,800,000 - totalArmTransferred` — all ARM not actually delivered to participants. This includes unsold ARM, allocated-but-never-claimed ARM, and ARM forfeited by participants who claimed after expiry (received refund only). `totalArmTransferred` is the running counter incremented by `claim()` when ARM is actually sent. This is a **semantic expansion** from the pre-3yr sweep — the function now sweeps unsold + unclaimed + forfeited. The time check determines which formula applies.
 - **After `cancel()`:** sweeps all preloaded ARM (1,800,000) — the crowdfund is in cancelled state, not finalized, so the function must check `cancelled` as an additional eligibility condition alongside `finalized`.
 
-All three send to the immutable treasury address. The function may be called at any time; it sweeps whatever is currently eligible under the above rules.
+All three send to the immutable treasury address. The function may be called at any time; it sweeps whatever is currently eligible under the above rules. **After the 3-year deadline, this function also sweeps allocated-but-undelivered ARM — the name "unallocated" understates the post-expiry scope.**
 
 **Commitment deadline is contract-enforced.** The contract reverts any commitment transaction submitted after the deadline timestamp. This is a hard contract-level guard, not a UI convention.
 
@@ -385,11 +468,15 @@ Expansion is binary: either base ($1.2M) or max ($1.8M). If capped demand clears
 
 ### Refunds
 
+Refunds arise from two sources: deposits exceeding the per-slot cap (`committedUsdc - effectiveUsdc`), and pro-rata scaling when a hop is oversubscribed (`effectiveUsdc - acceptedUsdc`). The canonical computation is USDC-domain-first:
+
 ```
-refund_usdc = total_deposited_usdc - (allocation_arm × price)
+refundUsdc = committedUsdc - acceptedUsdc
 ```
 
-Refunds are pull-based — participants call `claimRefund()` once eligible. See Finalization section for the full eligibility conditions.
+where `acceptedUsdc` is the participant's share of the hop ceiling (full effective balance if not oversubscribed, pro-rata share if oversubscribed). See §Canonical allocation computation for the full `computeAllocation()` logic.
+
+**Success-path refunds** are paid inside `claim()` — there is no separate refund-only path for the success case. **RefundMode / cancel / pre-finalization refunds** are paid via `claimRefund()` and return the participant's full raw deposited USDC. Refunds via `claimRefund()` do not expire. Success-path refunds via `claim()` also do not expire (the ARM portion expires after 3 years, but the USDC refund portion is always payable).
 
 ---
 
@@ -418,9 +505,9 @@ The crowdfund contract includes an emergency cancel mechanism for catastrophic p
 
 Crowdfund tokens are not revenue-gated. Voting power becomes active once ARM is claimed and delegated — unclaimed ARM is vote-inert. Team and airdrop tokens gain voting power proportional to revenue-milestone unlocks — at $0 protocol revenue, only crowdfund participants who have claimed and delegated vote.
 
-ARM must be delegated to vote. Delegation is designated at claim time as a mandatory parameter.
+ARM must be delegated to vote. Delegation is designated at claim time as a mandatory parameter. The Security Council can cancel the crowdfund pre-finalization in an emergency — see §Emergency Cancel.
 
-Standard proposals take approximately 11 days (48h delay + 7d vote + 48h execution). High-impact proposals (fee changes, treasury >5%, governance parameters, steward elections) take approximately 18 days (48h + 14d + 7d). Bond: 1,000 ARM, returned after lock period. Proposal threshold: 12,000 ARM.
+Standard proposals take approximately 11 days (48h delay + 7d vote + 48h execution). High-impact proposals (fee changes, treasury >5%, governance parameters, steward elections) take approximately 18 days (48h + 14d + 7d). Bond: 1,000 ARM (activates after global transfer unlock — before that, governance operates on proposal threshold only). Proposal threshold: 12,000 ARM.
 
 Crowdfund tokens become transferable via governance proposal. There are no predeclared conditions — holders decide when.
 
@@ -448,8 +535,8 @@ The protocol triggers an automatic wind-down if the revenue threshold is not rea
 
 | Parameter | Default | Governable |
 |---|---|---|
-| Revenue threshold | $10,000 cumulative | Yes |
-| Deadline | December 31, 2026 | Yes |
+| Revenue threshold | $10,000 cumulative | Yes (standard proposal) |
+| Deadline | December 31, 2026 | Yes (standard proposal) |
 
 The intent is to give the protocol approximately 6 months after mainnet launch to demonstrate traction. December 31, 2026 is the concrete implementation default and is calibrated to that intent based on the current launch timeline. If launch slips materially, governance should update the deadline before it becomes binding.
 
@@ -481,6 +568,8 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 - **This is a trusted-network crowdfund.** Not designed for viral distribution.
 - **Tokens are non-transferable at launch by design.** Transferability prioritizes governance participation during the formative phase. Token transfers can be unlocked by governance proposal.
 - **Automatic wind-down is a real risk.** If the protocol does not reach $10k revenue by December 31, 2026, wind-down initiates automatically.
+- **Multi-slot-per-hop is the core implementation dependency.** The entire allocation math — cap scaling, self-fill analysis, `hopDemand`, `computeAllocation()` — depends on the contract modeling `slotCount[address][hop]` as a counter that increments with each invite received. If the contract models hop access as a boolean rather than a counter, the spec's math is wrong. This must be confirmed in code before the crowdfund math is treated as settled.
+- **Wind-down / ARM token integration is an audit hotspot.** Wind-down assumes it can call `setTransferable(true)`, sweep non-ARM assets, exclude four hardcoded addresses from the redemption denominator, and end governance permanently. These hooks between the wind-down contract, ARM token, governor, and redemption contract are load-bearing — if any are slightly off, the "credible backstop" story weakens. Priority audit target.
 
 ---
 
@@ -508,11 +597,11 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 | Rollover | Unconditional — leftover always rolls forward | Rollover thresholds dropped as weak sybil protection; seed selection is the real defence. Simpler contract. |
 | No commitment withdrawals | Commitments are final once submitted | Eliminates gaming risk and simplifies contract; 3-week maximum lock period is known upfront |
 | ARM pre-load requirement | 1,800,000 ARM loaded before window opens | Ensures claim records written at finalization are always backed by sufficient ARM; enforced by contract flag |
-| Settlement model | Pull-based for refunds and ARM; push for net proceeds to treasury | `finalize()` records allocations and refund amounts, transfers only net proceeds to treasury. Participants pull refunds via `claimRefund()` and ARM via `claim()`. Avoids gas grief from iterating over all participants in one transaction. |
+| Settlement model | Lazy settlement: aggregate finalization + per-user computation at claim time | `finalize()` writes only aggregate state (sale size, ceilings, hopDemand, totalAllocatedArm) — zero per-participant storage writes. `claim()` computes each participant's allocation on-the-fly from aggregate parameters + their own commitment records. Net proceeds push to treasury at finalization. ARM and refunds pull at claim time. |
 | Crowdfund finalization | Permissionless — callable by anyone after deadline + minimum raise met | No identified party triggers finalization. If deadline passes without minimum raise, `claimRefund()` derives eligibility from timestamp + state; no separate function or privileged action needed. |
 | Crowdfund emergency cancel | Security Council (3-of-5 multisig), immediate effect, pre-finalization only | Speed serves participants in a genuine emergency. Abuse protection from Security Council composition, automatic unconditional refunds, and pre-finalization-only restriction — not a delay. |
 | Post-finalization | No privileged roles | All privileged functions permanently inactive after finalization. `withdrawUnallocatedArm` is permissionless — anyone calls it, ARM goes to immutable treasury address. |
-| Governance quiet period | 7 days after finalization; no proposals until day 8 | Gives community time to claim, delegate, and orient. Security Council handles any emergency during this window. Governable. |
+| Governance quiet period | 7 days after finalization; no proposals until day 8 | Gives community time to claim, delegate, and orient. Security Council handles any emergency during this window. Constructor parameter — applies once, no effect after expiry. |
 | ARM claim deadline | 3 years from finalization, fixed | Predeclared term of participation, ungovernable by design |
 | Automatic wind-down | Revenue threshold + deadline, both governable | Removes need for governance vote to initiate failure-case wind-down; defaults ($10k by Dec 31 2026) are conservative enough to signal genuine traction |
 
@@ -531,12 +620,12 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 | `invite(invitee, fromHop)` | Inviter | Target address, inviter's hop | ARM loaded; pre-deadline; not cancelled; not finalized; caller has available slots at `fromHop` | Records invite edge; creates a new participation slot for invitee at `fromHop + 1` (increases invitee's cap by `HOP_CAP[fromHop + 1]`); emits `Invited(caller, invitee, fromHop + 1, 0)`; decrements inviter's slot count at `fromHop` |
 | `commitWithInvite(inviter, fromHop, nonce, deadline, signature, amount)` | Invitee | Inviter address, inviter's hop, nonce, deadline, EIP-712 signature, USDC amount | Valid EIP-712 + EIP-1271 signature; `nonce > 0`; `amount > 0`; `block.timestamp ≤ deadline`; nonce not used/revoked; inviter has available slots at `fromHop`; ARM loaded; pre-deadline; not cancelled; not finalized; USDC approved | Records invite edge + commitment atomically; creates a new participation slot for invitee at `fromHop + 1`; transfers USDC to escrow; emits `Invited(inviter, caller, fromHop + 1, nonce)` + `Committed(caller, fromHop + 1, amount)`; consumes nonce; decrements inviter's slot count |
 | `revokeInviteNonce(nonce)` | Inviter | Nonce to revoke | `nonce > 0`; nonce not already consumed or revoked | Marks nonce permanently revoked; emits `InviteNonceRevoked` |
-| `finalize()` | Anyone | — | Post-deadline; not finalized; not cancelled; `capped_demand ≥ MINIMUM_RAISE` | Computes allocations; records per-address allocations and refund amounts; sets `finalized = true`; transfers net proceeds to treasury; emits `Finalized`. **Single-transaction mode (preferred):** also emits per-address `Allocated` + `AllocatedHop` events in the same transaction. **Phased mode (fallback):** emits only `Finalized`; settlement events are emitted later via `emitSettlement()`. **RefundMode branch:** if `net_proceeds < MINIMUM_RAISE`, sets both `finalized = true` and `refundMode = true`; no treasury transfer; no allocation/refund recording; emits `Finalized(refundMode=true)` only — no `Allocated` or `AllocatedHop` in either mode. |
-| `emitSettlement(startIndex, count)` | Anyone | Start index, batch size | Phased fallback only. `finalized == true`; `refundMode == false`; settlement events not yet fully emitted; `startIndex` must be monotonically advancing (batches are non-overlapping and sequential — no re-emission or out-of-order) | Emits `Allocated` + `AllocatedHop` events for the specified batch. `SettlementComplete` emitted exactly once, automatically when the final batch completes. No state changes beyond tracking emission progress. |
+| `finalize()` | Anyone | — | Post-deadline; not finalized; not cancelled; `capped_demand ≥ MINIMUM_RAISE` | Iterates all participants once to compute `hopDemand[]`. Writes aggregate state only: `finalized`, `finalizationTimestamp`, `saleSize`, `ceilings[]`, `hopDemand[]`, `totalAllocatedArm`, `totalArmTransferred = 0`. Transfers net proceeds to treasury. Emits `Finalized`. Zero per-participant storage writes. **`finalize()` may end in either success finalization or refundMode finalization** — the `capped_demand` precondition gates entry, but post-waterfall `totalAllocatedUsdc` may fall below `MINIMUM_RAISE` at base size (see §Finalization step 5). **RefundMode branch:** if `totalAllocatedUsdc < MINIMUM_RAISE`, sets both `finalized = true` and `refundMode = true`; no treasury transfer; no aggregate recording beyond flags; emits `Finalized(refundMode=true)`. |
 | `claimRefund()` | Participant | — | `refundMode == true` OR (`post-deadline AND !finalized AND capped_demand < MINIMUM_RAISE`) OR `cancelled == true`; refund not already claimed | Transfers refund USDC to caller; emits `RefundClaimed` |
-| `claim(delegate)` | Participant | Delegate address | `finalized == true`; `refundMode == false`; `block.timestamp <= finalizationTimestamp + 3 years`; not already claimed | Transfers allocated ARM to caller; records delegation; emits `ArmClaimed` |
+| `claim(delegate)` | Participant | Delegate address | `finalized == true`; `refundMode == false`; not already claimed | Computes allocation on-the-fly via `computeAllocation(msg.sender)`. Sets `claimed[msg.sender] = true`. If within 3-year window: transfers ARM, calls `delegateOnBehalf`, increments `totalArmTransferred`. Always transfers refund USDC if any. Emits `Allocated(participant, armTransferred, refundUsdc, delegate)` + `AllocatedHop` per hop. `nonReentrant`. |
+| `computeAllocation(address)` | Anyone (view) | Participant address | `finalized == true`; `refundMode == false` | Pure view function — returns `(armAmount, refundUsdc)` for the given address. Canonical computation: same logic as `claim()` minus side effects. Required for UI display of allocations before claiming. |
 | `cancel()` | Security Council | — | Not finalized | Sets `cancelled` permanently; emits `Cancelled` |
-| `withdrawUnallocatedArm()` | Anyone | — | `finalized == true` (sweeps unsold) OR post-3yr-deadline (sweeps unclaimed) OR `cancelled == true` (sweeps all 1.8M) | Transfers eligible ARM to immutable treasury address |
+| `withdrawUnallocatedArm()` | Anyone | — | `finalized == true` and within 3yr (sweeps `1,800,000 - totalAllocatedArm` — unsold only) OR `finalized == true` and past 3yr (sweeps `1,800,000 - totalArmTransferred` — unsold + unclaimed + forfeited) OR `cancelled == true` (sweeps all 1.8M) | Transfers eligible ARM to immutable treasury address. Time check determines sweep formula. |
 
 **Hop parameter convention:** All invite functions use `fromHop` — the inviter's hop level. The invitee's hop is always `fromHop + 1` and is never passed as a parameter.
 
@@ -551,30 +640,41 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 | `Invited` | `invite()`, `commitWithInvite()`, `launchTeamInvite()` | `address inviter, address invitee, uint8 hop, uint256 nonce` | New invite edge. `hop` is the invitee's hop level. `nonce` is 0 for direct invites, `> 0` for link-based invites — enables UI to track link consumption from events alone. |
 | `Committed` | `commit()`, `commitWithInvite()` | `address participant, uint8 hop, uint256 amount` | USDC committed at specific hop; amount is raw deposit (may exceed cap) |
 | `InviteNonceRevoked` | `revokeInviteNonce()` | `address inviter, uint256 nonce` | Invite link nonce permanently invalidated |
-| `Finalized` | `finalize()` | `uint256 saleSize, uint256 allocatedArm, uint256 netProceeds, bool refundMode` | Settlement completed; `refundMode` flag distinguishes success from refundMode finalization without reading contract storage |
-| `Allocated` | `finalize()` or `emitSettlement()` | `address indexed participant, uint256 totalArmAmount, uint256 totalRefundAmount` | Aggregate per-address settlement. One event per participating address. Success path only (not refundMode). In single-tx mode, emitted by `finalize()`; in phased mode, emitted by `emitSettlement()`. |
-| `AllocatedHop` | `finalize()` or `emitSettlement()` | `address indexed participant, uint8 indexed hop, uint256 armAmount` | Per-hop ARM allocation. One event per (address, hop) with `armAmount > 0`. Success path only. No refund field — refunds are aggregate (see `Allocated`). Settlement invariant: `sum(AllocatedHop.armAmount) == Allocated.totalArmAmount` per address. |
-| `ArmClaimed` | `claim()` | `address participant, uint256 armAmount, address delegate` | ARM transferred; delegation recorded |
-| `RefundClaimed` | `claimRefund()` | `address participant, uint256 usdcAmount` | Refund USDC transferred |
+| `Finalized` | `finalize()` | `uint256 saleSize, uint256 totalAllocatedArm, uint256 netProceeds, bool refundMode` | Settlement aggregates computed; `refundMode` flag distinguishes success from refundMode finalization without reading contract storage |
+| `Allocated` | `claim()` | `address indexed participant, uint256 armTransferred, uint256 refundUsdc, address delegate` | Per-address settlement. Emitted at claim time, one event per claiming address. `armTransferred` is actual ARM sent (0 if claimed after 3-year expiry). `refundUsdc` is actual USDC refund sent. `delegate` is the delegation target (address(0) if no ARM transferred). Success path only (not refundMode). |
+| `AllocatedHop` | `claim()` | `address indexed participant, uint8 indexed hop, uint256 acceptedUsdc` | Per-hop accepted USDC (theoretical, USDC domain — not affected by ARM expiry, since expiry affects transfer timing, not sale participation). One event per (address, hop) with `acceptedUsdc > 0`. Success path only. |
+| `RefundClaimed` | `claimRefund()` | `address participant, uint256 usdcAmount` | Refund USDC transferred (refundMode / cancel / pre-finalization paths only) |
 | `Cancelled` | `cancel()` | — | Crowdfund permanently cancelled by Security Council |
-| `SettlementComplete` | `emitSettlement()` (phased fallback only) | — | All `Allocated` and `AllocatedHop` events emitted. Emitted exactly once, automatically on final batch. Under single-transaction finalization, all settlement events arrive in the same transaction as `Finalized` and this event is not needed. |
 
 **Event design principles:**
-- Every state change emits an event. The observer reconstructs full crowdfund state from events alone — no view functions required for the core display.
-- `Allocated` and `AllocatedHop` are emitted on the success path only — by `finalize()` in single-transaction mode, or by `emitSettlement()` in phased mode. In refundMode, neither is emitted — the observer derives full-refund eligibility from `Finalized(refundMode=true)` combined with `Committed` totals.
-- `AllocatedHop` is only emitted when `armAmount > 0`. Zero-allocation hops produce no event — the UI infers zero from absence.
+- Every state change emits an event. The observer reconstructs **committed state and claimed state** from events alone — `Committed`, `Invited`, `Finalized`, `Allocated`, `AllocatedHop`, `RefundClaimed`, and `Cancelled` events are sufficient for the core display.
+- **Theoretical allocations before claims** require the `computeAllocation()` view function — they cannot be derived from events alone because the allocation math depends on aggregate parameters (`ceilings[]`, `hopDemand[]`) that are only stored on-chain, not emitted in event fields. The observer can call `computeAllocation(address)` for any participant after `Finalized` is emitted. **Events alone are insufficient to derive pre-claim allocations; the observer must query on-chain finalized aggregate state through `computeAllocation()`.**
+- `Allocated` and `AllocatedHop` are emitted at `claim()` time on the success path only — one set of events per claiming participant. In refundMode, neither is emitted — the observer derives full-refund eligibility from `Finalized(refundMode=true)` combined with `Committed` totals.
+- `Allocated.armTransferred` reports actual ARM sent, not theoretical entitlement. After 3-year expiry, `armTransferred` is 0 and `delegate` is `address(0)`, while `AllocatedHop.acceptedUsdc` still reflects the theoretical sale participation.
+- `AllocatedHop` is only emitted when `acceptedUsdc > 0`. Zero-acceptance hops produce no event — the UI infers zero from absence.
 - `commitWithInvite()` emits both `Invited` and `Committed` in the same transaction; the observer processes them independently.
 
 ### Gas Considerations
 
-**Single-transaction finalization is preferred.** On the success path, `finalize()` emits `Allocated` (one per address, ~800 events at max) plus `AllocatedHop` (one per non-zero (address, hop), up to ~1,600 events). At ~1,200 gas per event, that's ~2.9M gas for events alone, on top of allocation computation and storage writes. This should be feasible within a 30M block gas limit but must be verified during implementation.
+**Lazy settlement architecture.** `finalize()` writes only aggregate state — zero per-participant storage. Per-participant allocation computation and storage writes happen at `claim()` time, paid by each claimant. This eliminates the gas scaling problem that made eager per-participant finalization infeasible at ~800 participants.
 
-**Phased finalization is acceptable as a fallback** if single-transaction gas exceeds block limits. In this case, `finalize()` computes and stores allocations in one transaction, and a separate `emitSettlement(startIndex, count)` function emits `Allocated` + `AllocatedHop` events in batches. If phased finalization is implemented:
-- `claim()` is available immediately after `finalize()` — the on-chain allocation records are written during `finalize()` regardless of whether settlement events have been emitted. Event emission is a transparency layer, not a gating condition for claims.
-- The UI must handle an intermediate state: settlement computed but events not yet fully emitted. Show "Settlement in progress — allocation data arriving" rather than incomplete data as final.
+**`finalize()` gas profile (~3-5M gas, within 30M block limit):**
+- Iterates all participants once to compute `hopDemand[]`: ~800 participants × ~1.5 hops avg = ~1,200 SLOADs for commitment reads. Cold first-access is 2,100 gas; subsequent reads of the same participant's other hops are warm (100 gas). Estimated: ~2-4M gas depending on storage layout.
+- Aggregate SSTOREs (hopDemand, ceilings, saleSize, finalized, timestamp, totalAllocatedArm, totalArmTransferred): ~10 SSTOREs = ~200k gas
+- USDC transfer to treasury: ~65k gas
+- Event + overhead: ~200k gas
+- **Must be benchmarked against actual storage layout and realistic hop distribution before finalizing implementation.** Cold-read vs warm-read costs depend on storage packing.
 
-**Settlement mode selection.** The contract must support both paths. `finalize()` always computes and stores allocations and refund amounts. Whether `finalize()` also emits settlement events in the same transaction is determined during development and gas testing — not at runtime by the operator. The selection mechanism (compile-time constant, constructor flag, or automatic gas-based branching) is implementation-defined. Both modes must produce identical economic outcomes — same `Allocated.totalArmAmount`, same `Allocated.totalRefundAmount`, same `AllocatedHop.armAmount` per (address, hop), same unsold ARM. Only event timing differs. `emitSettlement()` should revert if the contract was deployed in single-tx mode (settlement events already emitted by `finalize()`).
-- The final `emitSettlement()` batch emits `SettlementComplete()`. The observer treats `Finalized` without `SettlementComplete` as settlement-in-progress.
+**`claim()` gas profile (~200k gas per call, user-borne):**
+- Read participant's own commitments: 1-3 SLOADs = ~6k gas
+- Read aggregate parameters (ceilings, hopDemand): ~6 SLOADs = ~12k gas
+- Compute allocation: negligible
+- Write `claimed[msg.sender]`: 1 SSTORE = ~20k gas
+- ARM transfer + `delegateOnBehalf`: ~100k gas
+- USDC refund transfer (if any): ~65k gas
+- Events: ~5k gas
+
+**Participant enumeration prerequisite.** `finalize()` must iterate all participants to compute `hopDemand[]`. The contract must maintain an enumerable participant set — e.g., an `address[] participants` array populated by `commit()` and `commitWithInvite()`. If this does not already exist, it must be added. This is a load-bearing dependency for the entire lazy settlement architecture.
 
 ### EIP-712 Typed Data (Invite Links)
 
@@ -598,9 +698,11 @@ Nonces are per-inviter, any unique `uint256 > 0` — nonce 0 is reserved as the 
 
 The following pseudocode is the **specification-intent** description of the allocation algorithm. It uses simplified arithmetic for readability. The contract implementation must use **integer math throughout**: percentages as basis points (BPS), token amounts in their smallest denomination (USDC: 6 decimals, ARM: 18 decimals), floor rounding on all pro-rata splits (participants may receive fractionally less than their exact share; dust accumulates as unallocated ARM), and no floating-point operations.
 
-**Two clean asset invariants the implementation must satisfy:**
-- **USDC:** `net_proceeds + sum(refunds) == sum(total_deposited)` — all deposited USDC is either sent to treasury or returned to participants; none is stranded
-- **ARM:** `allocated_arm + unsold_arm == MAX_SALE` — all pre-loaded ARM (always 1,800,000) is either allocated to participants or immediately recoverable as unsold capacity
+**Lazy settlement note:** This pseudocode describes the allocation *algorithm* — the math that determines who gets what. Under lazy settlement, this computation is split across two contract functions: `finalize()` executes the waterfall pass (steps 1-3 below) and stores the resulting aggregate parameters (`saleSize`, effective `ceilings[]`, `hopDemand[]`, `totalAllocatedArm`). `computeAllocation(address)` executes the per-participant allocation (step 4 equivalent) at claim time, using the stored aggregates plus the participant's own commitment records. The pseudocode below shows both passes as a single function for clarity.
+
+**Two clean asset invariants the implementation must satisfy** (see also §Conservation invariants for the lazy settlement formulation):
+- **USDC:** `netProceeds + sum(refundUsdc[p] for all p) == totalCommitted` — all deposited USDC is either sent to treasury or returned to participants; none is stranded. This is a settlement-completion identity that holds once all participants have claimed.
+- **ARM:** `totalArmTransferred + sweepableArm == 1,800,000` — all pre-loaded ARM is either delivered to participants or sweepable to treasury. Standing invariant: `totalArmTransferred <= totalAllocatedArm <= 1,800,000` at all times after finalization.
 
 **Contract preconditions (enforced before `finalize()` is called):**
 - An address may commit at multiple hop levels and receives ARM allocation from each independently.
@@ -741,10 +843,10 @@ def allocate(commitments, participation_slots):
     #   invariant:    net_proceeds + sum(refunds) == sum(total_deposited)
     #
     # ARM accounting:
-    #   allocated_arm = ARM owed to participants → claimable via claim()
-    #   unsold_arm    = ARM never allocated → claimable via withdrawUnallocatedArm() immediately
+    #   allocated_arm = ARM owed to participants → claimable via claim() (= totalAllocatedArm in lazy settlement)
+    #   unsold_arm    = ARM never allocated → sweepable via withdrawUnallocatedArm() immediately
     #   invariant:    allocated_arm + unsold_arm == MAX_SALE
-    #   (Allocated-but-unclaimed ARM after 3-year deadline also swept by withdrawUnallocatedArm())
+    #   (After 3yr, sweep formula changes to 1,800,000 - totalArmTransferred — see §withdrawUnallocatedArm)
 
     allocated_arm = sum(allocations.values())                  # ARM
     net_proceeds  = allocated_arm * PRICE                      # USDC (floor-rounding dust stays in contract as unsold_arm)
@@ -777,18 +879,24 @@ def allocate(commitments, participation_slots):
         refunds[addr] = deposited - allocated_usdc  # always >= 0
 
     # Verify invariants (implementation must enforce these):
+    # Under lazy settlement, these are verified as:
+    #   USDC: netProceeds + sum(refundUsdc[p]) == totalCommitted (settlement-completion identity)
+    #   ARM:  totalArmTransferred + sweepableArm == 1,800,000 (standing invariant)
+    # The pseudocode below shows the algorithmic equivalents.
     assert net_proceeds + sum(refunds.values()) == sum(total_deposited.values())  # USDC
     assert allocated_arm + unsold_arm == MAX_SALE                                  # ARM
-    # Settlement invariant: per-hop ARM sums to aggregate ARM for each address.
-    # This is the property tested by: sum(AllocatedHop.armAmount) == Allocated.totalArmAmount
+    # Settlement invariant: per-hop accepted USDC converts to aggregate ARM for each address.
+    # Under lazy settlement, this is verified by computeAllocation() — the canonical view function.
+    # AllocatedHop emits acceptedUsdc (USDC domain); Allocated emits armTransferred (ARM domain, actual).
     for addr in allocations:
         per_hop_sum = sum(arm for (a, h), arm in hop_allocations.items() if a == addr)
         assert per_hop_sum == allocations[addr]
 
-    # Return values map to events:
-    #   allocations     -> Allocated(address, totalArmAmount, totalRefundAmount)
-    #   hop_allocations -> AllocatedHop(address, hop, armAmount) for each entry with armAmount > 0
-    #   refunds         -> included in Allocated event's totalRefundAmount field
+    # Return values map to lazy settlement:
+    #   allocations     -> computeAllocation(address).armAmount (theoretical entitlement)
+    #   hop_allocations -> AllocatedHop(address, hop, acceptedUsdc) emitted at claim() time
+    #   refunds         -> computeAllocation(address).refundUsdc
+    #   At claim(), Allocated emits armTransferred (actual, 0 after expiry) and refundUsdc (actual)
     return allocations, hop_allocations, refunds, unsold_arm, net_proceeds
 ```
 
@@ -797,16 +905,19 @@ def allocate(commitments, participation_slots):
 | Property | Guarantee |
 |---|---|
 | Hop-2 reserved capacity | Hop-2 always has first claim on `HOP2_FLOOR_BPS × sale_size`; actual receipt depends on hop-2 demand |
-| USDC conservation | `net_proceeds + sum(refunds) == sum(total_deposited)` |
-| ARM conservation | `allocated_arm + unsold_arm == MAX_SALE` (1,800,000 always preloaded; base-sale expansion reserve is immediately sweepable) |
-| Minimum raise | If `net_proceeds < MINIMUM_RAISE` after allocation, contract sets `refundMode = true` (no revert — state must be preserved for `claimRefund()` to work) |
-| Integer rounding | All pro-rata splits floor-rounded; dust accumulates in `unsold_arm` |
+| USDC conservation | `net_proceeds + sum(refunds) == sum(total_deposited)` (settlement-completion identity — holds once all participants have claimed) |
+| ARM conservation | `totalArmTransferred + sweepableArm == 1,800,000` (sweepableArm = preloaded - totalArmTransferred) |
+| Minimum raise | If `totalAllocatedUsdc < MINIMUM_RAISE` after aggregate computation, contract sets `refundMode = true` (no revert — state must be preserved for `claimRefund()` to work) |
+| Integer rounding | All pro-rata splits floor-rounded per participant per hop; refunds round up (participant never under-refunded); dust accumulates in sweepable pool |
+| Order-independence | All participant entitlements fixed at `finalize()` time; claims may occur in any order; no claim changes any other participant's entitlement |
 
 **Asset flows post-finalization:**
 
 | Asset | When | Mechanism |
 |---|---|---|
 | Net USDC proceeds | At finalization | Push to immutable treasury address |
-| Excess USDC (refunds) | After finalization, no expiry | Pull: participant calls `claimRefund()` |
-| Unsold ARM | After finalization | Pull: anyone calls `withdrawUnallocatedArm()` |
-| Allocated-but-unclaimed ARM | After 3-year claim deadline | Pull: anyone calls `withdrawUnallocatedArm()` (sweeps remaining ARM balance at that point) |
+| Allocated ARM (within 3yr) | After finalization, within 3-year window | Pull: participant calls `claim(delegate)` |
+| Success-path USDC refunds | After finalization, no expiry | Pull: participant calls `claim(delegate)` — refund portion always payable |
+| RefundMode/cancel USDC refunds | After finalization or cancel, no expiry | Pull: participant calls `claimRefund()` |
+| Unsold ARM | After finalization | Pull: anyone calls `withdrawUnallocatedArm()` (sweeps `1,800,000 - totalAllocatedArm`) |
+| Unclaimed + forfeited ARM | After 3-year claim deadline | Pull: anyone calls `withdrawUnallocatedArm()` (sweeps `1,800,000 - totalArmTransferred`) |
