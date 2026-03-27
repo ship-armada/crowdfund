@@ -482,13 +482,13 @@ the minimum raise ($1,000,000). You may withdraw your full deposit.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Settlement data sources:** Aggregate totals (committed, allocated ARM, refund USDC) come from `Allocated` events. Per-hop ARM breakdown comes from `AllocatedHop` events. In refundMode, neither event is emitted — the claim tab shows full refund eligibility derived from `Committed` totals.
+**Settlement data sources:** Under lazy settlement, the UI can display theoretical allocations immediately after `Finalized` by calling `computeAllocation(connectedAddress)` — no need to wait for events. As participants call `claim()`, `Allocated` events provide confirmed settlement data. Per-hop breakdown comes from `AllocatedHop` events (emitted at claim time). In refundMode, neither event is emitted — the claim tab shows full refund eligibility derived from `Committed` totals.
 
-**Phased settlement handling:** On-chain claims are available immediately after `finalize()` (allocations are stored on-chain during finalization). However, the UI cannot display the claim flow until it knows the connected address's settlement data. The claim tab uses this logic:
-- `Finalized` received, connected address's `Allocated` event received → show claim flow with full settlement detail
-- `Finalized` received, `SettlementComplete` received, NO `Allocated` event for connected address → address has no allocation (committed but fully oversubscribed or never committed); show refund-only if applicable
-- `Finalized` received, neither `Allocated` nor `SettlementComplete` received → show "Awaiting your settlement data"
-Under single-transaction finalization (the preferred path), all events arrive in the same block and the intermediate state is never visible.
+**Claim tab logic after finalization:**
+- `Finalized` received → call `computeAllocation(connectedAddress)` to display theoretical allocation; enable `claim(delegate)` button
+- `Allocated` event received for connected address → update display with confirmed settlement (actual `armTransferred` and `refundUsdc`)
+- `Finalized(refundMode=true)` → show refund-only via `claimRefund()`
+- Post-3yr expiry → `claim()` still available but ARM portion forfeited; show "Claim refund only — ARM claim period has expired"
 
 **Delegation at claim time:** The crowdfund spec requires delegation as a mandatory parameter at claim. The claim UI must include a delegate address input. Options:
 - Self-delegate (default, pre-filled with connected address)
@@ -589,7 +589,7 @@ All write operations (commit, invite, claim) follow a consistent transaction flo
 
 The commitment UI consumes the following events from the `ArmadaCrowdfund` contract:
 
-`Invited` (includes `nonce` — 0 for direct invites, > 0 for link redemptions), `Committed`, `SeedAdded`, `Finalized`, `Allocated` (aggregate per-address settlement), `AllocatedHop` (per-hop ARM detail — only emitted when armAmount > 0, success path only), `ArmClaimed`, `RefundClaimed`, `Cancelled` (shared with the observer), plus `ArmLoaded` (to distinguish pre-open from open state), `InviteNonceRevoked` (nonce explicitly revoked by inviter), and `SettlementComplete` (phased fallback only — signals all settlement events emitted; used by the claim tab to distinguish "not yet emitted" from "no allocation"). Together, `Invited.nonce` and `InviteNonceRevoked` make all invite-link lifecycle states (pending, consumed, revoked) fully observable from events. **Settlement invariant:** for each address, `sum(AllocatedHop.armAmount) == Allocated.totalArmAmount`. In refundMode, neither `Allocated` nor `AllocatedHop` is emitted.
+`Invited` (includes `nonce` — 0 for direct invites, > 0 for link redemptions), `Committed`, `SeedAdded`, `Finalized`, `Allocated` (per-address settlement, emitted at `claim()` time — includes `armTransferred`, `refundUsdc`, `delegate`), `AllocatedHop` (per-hop accepted USDC, emitted at `claim()` time — only emitted when `acceptedUsdc > 0`, success path only), `RefundClaimed`, `Cancelled` (shared with the observer), plus `ArmLoaded` (to distinguish pre-open from open state) and `InviteNonceRevoked` (nonce explicitly revoked by inviter). Together, `Invited.nonce` and `InviteNonceRevoked` make all invite-link lifecycle states (pending, consumed, revoked) fully observable from events. Pre-claim theoretical allocations are available via the `computeAllocation(address)` view function immediately after `Finalized`. In refundMode, neither `Allocated` nor `AllocatedHop` is emitted.
 
 **Write functions called:**
 
