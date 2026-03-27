@@ -14,7 +14,7 @@ Verify that the contract implementation matches the canonical crowdfund mechanis
 * accounting invariants
 * allocation / refund behavior
 * invite / slot mechanics
-* phased settlement behavior
+* lazy settlement (aggregate finalization + per-user claim-time computation)
 * emitted event surface required by the observer and committer UIs
 
 This test spec is the bridge between `CROWDFUND.md` and the eventual Foundry test suite. The implementation is not ready for audit until all tests and invariants in this document pass.  
@@ -27,8 +27,8 @@ This test spec is the bridge between `CROWDFUND.md` and the eventual Foundry tes
 
 ### Contract-surface compatibility sources
 
-* `CROWDFUND_OBSERVER.md` — event-consumed read model, phased settlement expectations, per-hop settlement display assumptions. 
-* `CROWDFUND_COMMITTER.md` — claim timing assumptions, invite-link lifecycle expectations, settlement-data requirements for the connected user. 
+* `CROWDFUND_OBSERVER.md` — event-consumed read model, per-hop settlement display assumptions, `computeAllocation()` view function expectations. 
+* `CROWDFUND_COMMITTER.md` — claim timing assumptions, invite-link lifecycle expectations, `computeAllocation()` for pre-claim display. 
 
 ### Review / traceability source
 
@@ -48,10 +48,6 @@ The test harness should support:
   * launch team / ROOT authority
   * Security Council
   * arbitrary participants
-* toggling between:
-
-  * single-transaction settlement path
-  * phased settlement path using `emitSettlement(startIndex, count)` 
 
 The harness should also include helpers for:
 
@@ -132,13 +128,14 @@ Participation is slot-based:
 * `revokeInviteNonce(0)` reverts
 * each nonzero nonce can be consumed or revoked at most once. 
 
-### 4.8 Phased settlement invariant
+### 4.8 Lazy settlement invariants
 
-If phased settlement is used:
-
-* settlement batches are monotonic, sequential, non-overlapping
-* no re-emission for already emitted participants
-* `SettlementComplete` is emitted exactly once, on the final batch only.  
+* `finalize()` writes zero per-participant storage — only aggregate state (`saleSize`, `ceilings[]`, `hopDemand[]`, `totalAllocatedArm`, `totalArmTransferred = 0`)
+* `computeAllocation(address)` is a pure view function — calling it does not modify state
+* `computeAllocation(address)` returns identical results regardless of other participants' claim status (order-independence)
+* `claim()` transfers ARM amount equal to `computeAllocation(msg.sender).armAmount` (within 3-year window) and refund equal to `computeAllocation(msg.sender).refundUsdc`
+* `totalArmTransferred` increments only when ARM is actually sent (not when entitlement is computed)
+* After 3-year expiry: `claim()` transfers refund USDC only, `armTransferred = 0`, `totalArmTransferred` does not increment
 
 ### 4.9 Commitment amount invariant
 
@@ -152,21 +149,23 @@ If phased settlement is used:
 * Each address can hold at most one hop-0 slot
 * Duplicate seeding is not a path to doubled hop-0 cap or invite rights.
 
-### 4.11 Settlement event ordering invariant
+### 4.11 Claim event ordering invariant
 
-For each participant in a settlement batch (single-tx or phased):
+For each `claim()` call:
 
-* `Allocated` is emitted before that participant's `AllocatedHop` events
-* In phased mode, the same per-participant ordering is preserved within each batch.
+* `Allocated` is emitted with actual `armTransferred` (0 after expiry) and `refundUsdc`
+* `AllocatedHop` events follow, one per hop with `acceptedUsdc > 0`
+* `Allocated.armTransferred` equals the ARM actually transferred in this transaction
+* Within the 3-year window: `sum(AllocatedHop.acceptedUsdc) * ARM_PER_USDC_RATE` (floored) equals `Allocated.armTransferred`
+* After 3-year expiry: `Allocated.armTransferred == 0` while `AllocatedHop.acceptedUsdc` values remain unchanged (theoretical)
 
-### 4.12 Settlement mode equivalence invariant
+### 4.12 computeAllocation / claim equivalence invariant
 
-Single-tx and phased settlement must produce identical economic outputs:
+For any participant, within the 3-year window:
 
-* same `Allocated.totalArmAmount` per address
-* same `Allocated.totalRefundAmount` per address
-* same `AllocatedHop.armAmount` per (address, hop)
-* same unsold ARM outcome
+* `computeAllocation(address).armAmount == Allocated.armTransferred` (from their `claim()` call)
+* `computeAllocation(address).refundUsdc == Allocated.refundUsdc` (from their `claim()` call)
+* `computeAllocation()` returns the same values before and after other participants claim (order-independence)
 * only event timing differs, not economics.
 
 ## 5. Per-Function Test Matrix
@@ -282,31 +281,33 @@ Test success path:
 * only if not finalized
 * only if not cancelled
 * only if `capped_demand >= MINIMUM_RAISE`
-* computes allocations and refunds correctly
+* writes aggregate state only: `saleSize`, `ceilings[]`, `hopDemand[]`, `totalAllocatedArm`, `totalArmTransferred = 0`
+* zero per-participant storage writes
 * sets `finalized = true`
-* transfers net proceeds to treasury
-* single-tx mode emits `Finalized`, `Allocated`, `AllocatedHop`
-* phased mode emits only `Finalized`
-* **event ordering:** for each participant, `Allocated` precedes that participant's `AllocatedHop` events in log order. 
+* transfers net proceeds to treasury (`netProceeds = totalAllocatedUsdc`, USDC domain)
+* emits `Finalized(saleSize, totalAllocatedArm, netProceeds, refundMode=false)`
+* does NOT emit `Allocated` or `AllocatedHop` — those are emitted at `claim()` time
 
 Test refundMode branch:
 
-* if post-allocation `net_proceeds < MINIMUM_RAISE`, sets `finalized = true` and `refundMode = true`
+* if post-allocation `totalAllocatedUsdc < MINIMUM_RAISE`, sets `finalized = true` and `refundMode = true`
 * emits `Finalized(refundMode=true)`
-* records no allocations
+* records no aggregate allocation state beyond flags
 * transfers no treasury proceeds
-* emits no settlement events. 
+* emits no `Allocated` or `AllocatedHop` events
 
-### 5.9 `emitSettlement(startIndex, count)`
+### 5.9 `computeAllocation(address)` (view function)
 
 Test:
 
-* callable only in phased mode
-* only after successful non-refundMode finalization
-* rejects overlap / re-emission / out-of-order batches
-* emits `Allocated` and `AllocatedHop` for batch
-* final batch emits `SettlementComplete` exactly once
-* intermediate batches do not. 
+* callable after successful non-refundMode finalization
+* returns `(armAmount, refundUsdc)` for any address
+* returns `(0, 0)` for addresses that never committed
+* result is deterministic — same output on repeated calls
+* result is order-independent — unaffected by other participants' claim status
+* matches the allocation algorithm: `acceptedUsdc` computed per hop from `ceilings[]` and `hopDemand[]`, then `armAmount = totalAcceptedUsdc * ARM_PER_USDC_RATE` (floor), `refundUsdc = totalCommittedUsdc - totalAcceptedUsdc`
+* uses effective post-waterfall `ceilings[]` stored by `finalize()`, not raw BPS values
+* correctly handles multi-slot participants: `effectiveUsdc = min(committed, slotCount * HOP_CAP)`
 
 ### 5.10 `claimRefund()`
 
@@ -319,22 +320,34 @@ Test eligibility paths:
 Test:
 
 * refund amount equals full deposit in refundMode/cancel/pre-finalization-min-fail cases
-* partial refund path equals recorded refund on success path
-* multiple claims revert or zero out correctly
-* emits `RefundClaimed`. 
+* multiple claims revert (already claimed)
+* emits `RefundClaimed`
+* NOT callable on success path — success-path refunds go through `claim()`. 
 
 ### 5.11 `claim(delegate)`
 
 Test:
 
-* only after successful finalization
-* reverts in refundMode
-* reverts after 3-year deadline
-* requires delegation parameter
-* transfers ARM
-* records claim state
-* emits `ArmClaimed`
-* does not affect refund claimability. 
+* only after successful finalization (`finalized == true && refundMode == false`)
+* computes allocation on-the-fly via `computeAllocation(msg.sender)` — result matches the view function
+* sets `claimed[msg.sender] = true`
+* within 3-year window: transfers ARM, calls `delegateOnBehalf(msg.sender, delegate)`, increments `totalArmTransferred`
+* always transfers refund USDC if any (no expiry on refund portion)
+* emits `Allocated(participant, armTransferred, refundUsdc, delegate)` — `armTransferred` is actual ARM sent
+* emits `AllocatedHop` per hop with `acceptedUsdc > 0` (theoretical USDC domain, not affected by expiry)
+* `nonReentrant` — verify reentrancy reverts
+* multiple claims revert (already claimed)
+
+Test post-expiry behavior (after 3-year deadline):
+
+* `claim()` still callable — does NOT revert
+* `claimed[msg.sender]` set to `true`
+* ARM is NOT transferred (`armTransferred = 0`)
+* `delegateOnBehalf` is NOT called
+* `totalArmTransferred` does NOT increment
+* refund USDC IS transferred (no expiry)
+* emits `Allocated` with `armTransferred = 0`, `delegate = address(0)`
+* participant permanently forfeits ARM entitlement. 
 
 ### 5.12 `cancel()`
 
@@ -458,25 +471,48 @@ Verify:
 * full refunds available
 * all ARM sweepable. 
 
-### S11. Phased settlement
+### S11. Lazy settlement — aggregate finalization
 
 Verify:
 
-* `finalize()` stores settlement but emits only `Finalized`
-* batches emit settlement data
-* UI-distinguishing signals exist: pre-complete vs complete
-* `SettlementComplete` exactly once.  
+* `finalize()` writes only aggregate state (`saleSize`, `ceilings[]`, `hopDemand[]`, `totalAllocatedArm`, `totalArmTransferred = 0`)
+* `finalize()` emits only `Finalized` — no `Allocated` or `AllocatedHop` events
+* zero per-participant storage writes during `finalize()`
+* `computeAllocation(address)` returns correct values immediately after `finalize()`
+* `claim(delegate)` computes and transfers correct amounts matching `computeAllocation()` output
+
+### S11a. Lazy settlement — claim order independence
+
+Multiple participants claim in different orders across two test runs with identical commitments.
+Verify:
+
+* each participant receives identical ARM and refund regardless of claim order
+* `computeAllocation()` returns identical values before, during, and after other participants' claims
+* `totalArmTransferred` after all claims equals `totalAllocatedArm` (within rounding)
+
+### S11b. Lazy settlement — post-expiry claim
+
+Participant calls `claim()` after 3-year deadline.
+Verify:
+
+* `claim()` does NOT revert
+* `claimed[msg.sender] = true`
+* refund USDC transferred
+* ARM NOT transferred, `totalArmTransferred` NOT incremented
+* `delegateOnBehalf` NOT called
+* `Allocated` emitted with `armTransferred = 0`, `delegate = address(0)`
+* participant cannot call `claim()` again (already claimed)
 
 ### S12. No-allocation participant after success
 
 Address commits but receives zero ARM allocation due to full oversubscription at their hop(s).
 Verify:
 
-* `Allocated(participant, 0, fullRefundAmount)` is still emitted — every participating address gets an `Allocated` event on the success path, even with zero ARM
-* **no** `AllocatedHop` events for that participant (armAmount = 0 at all hops → no per-hop events)
-* settlement invariant holds: `sum(AllocatedHop.armAmount) == 0 == Allocated.totalArmAmount`
-* full deposit returned via `claimRefund()` (refund = total deposited)
-* observer and committer can distinguish "zero allocation with full refund" from "settlement not yet emitted".
+* `computeAllocation(participant)` returns `(0, fullRefundAmount)`
+* `claim(delegate)` transfers only refund USDC (no ARM)
+* `Allocated(participant, 0, fullRefundAmount, address(0))` emitted — zero ARM, full refund
+* **no** `AllocatedHop` events for that participant (`acceptedUsdc = 0` at all hops → no per-hop events)
+* `totalArmTransferred` does not increment
 
 ### S13. Over-issued invite links
 
@@ -510,28 +546,29 @@ Verify:
 150 seeds, each with full subtrees (1,740 nodes total).
 Verify:
 
-* `finalize()` gas usage measured
-* determines whether phased settlement is needed
-* both invariants hold at scale.
+* `finalize()` gas usage measured — should be 3-5M (aggregate-only: iterate participants for `hopDemand[]` + write aggregate state + treasury transfer)
+* if gas exceeds 25M, investigate storage layout and participant enumeration implementation
+* `claim()` gas measured per participant — should be ~200k
+* `computeAllocation()` gas measured — should be negligible (view function)
+* conservation invariants hold at scale
 
-### S17. Settlement mode equivalence
+### S17. withdrawUnallocatedArm time-conditional sweep
 
-Run the same commitment set through single-tx and phased settlement.
+Verify three sweep windows:
+
+* **Immediately post-finalization (within 3yr):** sweeps `1,800,000 - totalAllocatedArm` (unsold only); does NOT touch allocated-but-unclaimed ARM
+* **After 3-year deadline:** sweeps `1,800,000 - totalArmTransferred` (unsold + unclaimed + forfeited); sweep amount is larger than pre-expiry sweep
+* **After cancel:** sweeps all 1,800,000 ARM
+
+Test that the time check correctly determines which formula applies.
+
+### S18. Claim event ordering
+
+Multiple participants call `claim()`.
 Verify:
 
-* identical `Allocated.totalArmAmount` per address
-* identical `Allocated.totalRefundAmount` per address  
-* identical `AllocatedHop.armAmount` per (address, hop)
-* identical unsold ARM outcome
-* only event timing differs.
-
-### S18. Settlement event ordering
-
-Finalize with multiple participants at multiple hops.
-Verify:
-
-* for each participant, `Allocated` log index < all of that participant's `AllocatedHop` log indices
-* in phased mode, same ordering within each batch.
+* for each `claim()` call, `Allocated` log index < all of that participant's `AllocatedHop` log indices within the same transaction
+* `Allocated.armTransferred` matches actual ARM transfer amount in the same transaction
 
 ### S19. Timestamp boundaries
 
@@ -560,13 +597,13 @@ Run fuzzing over:
 * refund claim order
 * nonce creation / revocation / redemption order
 * **timestamp proximity to boundaries** (week-1 close, commitment deadline, link expiry, 3-year claim deadline)
-* **settlement mode** (same commitment set run through single-tx and phased — assert identical economics)
+* **post-expiry claims** (varying when participants claim relative to the 3-year deadline)
 
 Fuzz invariants:
 
-* conservation laws
-* settlement invariant
-* settlement mode equivalence (same economic outputs regardless of single-tx vs phased)
+* conservation laws (`totalArmTransferred + sweepableArm == 1,800,000`; `sum(refundUsdc) + netProceeds == totalCommitted` at convergence)
+* `computeAllocation()` / `claim()` equivalence: for each participant, view output matches actual claim output
+* order-independence: `computeAllocation()` returns identical values regardless of other claims
 * no negative refunds / allocations
 * no over-consumption of slots
 * no duplicate nonce consumption
@@ -585,10 +622,8 @@ Verify exact emitter / fields / absence conditions for:
 * `Committed`
 * `InviteNonceRevoked`
 * `Finalized`
-* `Allocated`
-* `AllocatedHop`
-* `SettlementComplete`
-* `ArmClaimed`
+* `Allocated` (emitted at `claim()` time, includes `armTransferred`, `refundUsdc`, `delegate`)
+* `AllocatedHop` (emitted at `claim()` time, includes `acceptedUsdc` in USDC domain)
 * `RefundClaimed`
 * `Cancelled`  
 
@@ -596,10 +631,11 @@ Specific checks:
 
 * direct invites emit `Invited(..., nonce = 0)`
 * link invites emit `Invited(..., nonce > 0)`
-* `AllocatedHop` emitted only when `armAmount > 0`
-* no settlement events in refundMode
-* `SettlementComplete` only in phased mode
-* **settlement event ordering:** for each participant, `Allocated` log index < all of that participant's `AllocatedHop` log indices within the same transaction or batch
+* `AllocatedHop` emitted only when `acceptedUsdc > 0`
+* no `Allocated` or `AllocatedHop` events emitted by `finalize()` — only by `claim()`
+* no `Allocated` or `AllocatedHop` events in refundMode or cancelled state
+* **claim event ordering:** for each `claim()` call, `Allocated` log index < all of that participant's `AllocatedHop` log indices within the same transaction
+* `Allocated.armTransferred` matches actual ARM transferred (0 after 3-year expiry)
 * `commitWithInvite()` emits `Invited` and `Committed` in the same transaction — verify both present with correct fields
 
 ## 9. UI-Contract Compatibility Tests
@@ -612,10 +648,11 @@ Contract events must be sufficient for the observer to reconstruct:
 
 * slot-based node graph from `SeedAdded` + `Invited`
 * per-hop commitments from `Committed`
-* aggregate settlement from `Allocated`
-* per-hop settlement from `AllocatedHop`
-* phased completeness from `SettlementComplete`
-* refundMode and cancel states from `Finalized` / `Cancelled`. 
+* claimed settlement from `Allocated` (emitted at `claim()` time)
+* per-hop acceptance from `AllocatedHop` (emitted at `claim()` time)
+* refundMode and cancel states from `Finalized` / `Cancelled`
+
+Pre-claim theoretical allocations require the `computeAllocation(address)` view function — events alone are insufficient for pre-claim allocation display.
 
 ### Committer compatibility
 
@@ -623,24 +660,26 @@ Contract events and state must be sufficient for the committer to determine:
 
 * connected address eligibility from `SeedAdded` and `Invited`
 * link lifecycle from `Invited.nonce` + `InviteNonceRevoked`
+* theoretical allocation via `computeAllocation(connectedAddress)` immediately after `Finalized`
 * claim tab states:
 
-  * `Allocated` present
-  * `SettlementComplete` present without `Allocated`
-  * neither yet
-* refundMode behavior with no settlement events. 
+  * `Finalized` received → show allocation from `computeAllocation()`, enable `claim(delegate)` button
+  * `Allocated` received for this address → show confirmed settlement (actual ARM transferred + refund)
+  * `Finalized(refundMode=true)` → show refund-only via `claimRefund()`
 
 ## 10. Exit Criteria
 
 Implementation is ready for audit only when:
 
-* all per-function happy-path tests pass
+* all per-function happy-path tests pass (including `computeAllocation()` view function)
 * all revert tests pass
-* all deterministic scenarios pass (S1–S19)
-* all global invariants pass under fuzzing (4.1–4.12)
-* settlement mode equivalence confirmed (single-tx and phased produce identical economics)
-* all event-surface tests pass including ordering guarantees
-* observer and committer compatibility tests pass
+* all deterministic scenarios pass (S1–S19, including S11a order-independence and S11b post-expiry)
+* all global invariants pass under fuzzing (4.1–4.12, including lazy settlement invariants 4.8 and 4.12)
+* `computeAllocation()` / `claim()` equivalence confirmed under fuzz (view output matches actual claim output for all participants)
+* all event-surface tests pass including claim-time ordering guarantees
+* observer and committer compatibility tests pass (including `computeAllocation()` view function)
+* `finalize()` gas benchmark completed at maximum network scale (S16)
+* slot-count model confirmed: `slotCount[address][hop]` is a counter, not a boolean
 * every major mechanism rule in `CROWDFUND.md` maps to at least one explicit test in `SPEC_TRACEABILITY.md`
 
 ---
