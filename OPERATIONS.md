@@ -27,7 +27,9 @@ Complete this table before deployment. Every address must be confirmed before an
 **Key access rules (from CROWDFUND.md):**
 - `addSeed()` and `launchTeamInvite()`: ROOT only, week 1 only
 - `cancel()`: Security Council only, pre-finalization only
-- `finalize()`, `emitSettlement()`, `withdrawUnallocatedArm()`: permissionless (anyone)
+- `finalize()`, `withdrawUnallocatedArm()`: permissionless (anyone)
+- `claim(delegate)`, `claimRefund()`: permissionless (participant-initiated)
+- `computeAllocation(address)`: public view function (anyone)
 - `loadArm()`: permissionless (anyone), callable once
 
 **Before deployment:** confirm all signers for each multisig are reachable and have tested signing. Security Council quorum must be reachable within 1 hour during the commitment window.
@@ -253,8 +255,7 @@ After commitment deadline passes (day 21+), before calling `finalize()`:
 | `capped_demand ≥ MINIMUM_RAISE ($1M)` | Read from contract state, or derive from events using slot-capped logic: for each `(address, hop)`, cap = `participation_slots[(address, hop)] × HOP_CAP[hop]`; sum across all pairs. Do **not** sum raw `Committed` amounts — that overstates demand and may give a false go signal. | Ops |
 | `cancelled == false` | Read from contract state | Ops |
 | `finalized == false` | Read from contract state | Ops |
-| Gas estimation for single-tx `finalize()` | Run `eth_estimateGas`; compare to block gas limit | Ops |
-| Single-tx or phased decision made | See §6 | Ops + team |
+| Gas estimation for `finalize()` | Run `eth_estimateGas`; compare to block gas limit (should be 3-5M under lazy settlement) | Ops |
 
 **If `capped_demand < MINIMUM_RAISE`:** Do not call `finalize()`. Refunds are already available via `claimRefund()` — the eligibility condition `(post-deadline AND !finalized AND capped_demand < MIN)` activates automatically. Announce to participants immediately. No on-chain action required.
 
@@ -262,89 +263,41 @@ After commitment deadline passes (day 21+), before calling `finalize()`:
 
 ## 6. Finalization Procedure
 
-### Settlement mode
+### Lazy settlement architecture
 
-The settlement mode (single-tx vs phased) is determined during development and gas testing, not by the operator at finalization time. The deployed contract either emits settlement events during `finalize()` (single-tx) or defers them to `emitSettlement()` (phased). The selection mechanism is implementation-defined (see `CROWDFUND.md` Gas Considerations).
+Under lazy settlement, `finalize()` writes only aggregate state — zero per-participant storage writes. Individual allocations are computed on-the-fly by `computeAllocation(address)` and executed when each participant calls `claim(delegate)`. There is no settlement mode selection, no `emitSettlement()`, and no batched event emission. See `CROWDFUND.md` §Finalization and §Gas Considerations.
 
-**Before the commitment window opens, confirm which mode the deployed contract uses and record it:**
-
-| Mode | How `finalize()` behaves | What the operator does after |
-|---|---|---|
-| **Single-tx** | Emits `Finalized` + `Allocated` + `AllocatedHop` in one transaction | Verify events (Path A Step 3). `emitSettlement()` is not available. |
-| **Phased** | Emits only `Finalized`; stores allocations | Call `emitSettlement()` in batches (Path B Step 2). |
-
-**Gas estimation is still useful** — run `eth_estimateGas` before calling `finalize()` to confirm the transaction will succeed within the block gas limit. If it reverts or exceeds 30M, investigate before proceeding.
-
-Document the confirmed mode in the decision log (§10).
+**Gas estimation:** `finalize()` iterates all participants once to compute `hopDemand[]` — estimated 3-5M gas at ~800 participants. Run `eth_estimateGas` before calling to confirm. If it exceeds 25M, investigate the participant count and storage layout before proceeding.
 
 ---
 
-### Path A: Single-transaction finalization
-
-#### Step 1: Call `finalize()`
+### Step 1: Call `finalize()`
 
 | | |
 |---|---|
 | **Actor** | Anyone (typically ops) |
-| **Action** | Call `finalize()` with generous gas limit (30M) |
-| **Preconditions** | Pre-finalization go/no-go checkpoint passed; single-tx decision made |
-| **On-chain confirmation** | `Finalized(saleSize, allocatedArm, netProceeds, refundMode)` emitted; `Allocated` events for each participant; `AllocatedHop` events per non-zero (address, hop); USDC transferred to treasury |
-| **Fallback** | If tx reverts: check preconditions; check gas limit; see §9.6 (gas too high) |
+| **Action** | Call `finalize()` |
+| **Preconditions** | Pre-finalization go/no-go checkpoint passed |
+| **On-chain confirmation** | `Finalized(saleSize, totalAllocatedArm, netProceeds, refundMode)` emitted; aggregate state written; USDC transferred to treasury (success path) |
+| **Fallback** | If tx reverts: check preconditions; check gas limit; see §9.6 |
 
 Record: `finalize_tx = [hash]`, `block = [number]`, `refundMode = [true/false]`, `netProceeds = [amount]`
 
-#### Step 2: Verify outcome
+### Step 2: Verify outcome
 
 - Read `Finalized` event: `refundMode` field
-- If `refundMode == false`: success path — proceed to §6.3
-- If `refundMode == true`: refundMode path — proceed to §6.4
+- If `refundMode == false`: success path — proceed to Step 3
+- If `refundMode == true`: refundMode path — proceed to §6 Path C
 
-#### Step 3: Post-finalization verification (success path)
+### Step 3: Post-finalization verification (success path)
 
 - [ ] Treasury received `netProceeds` USDC: verify `USDC.balanceOf(treasury)` increased by `netProceeds`
-- [ ] All `Allocated` events emitted — one per participating address on the success path, including addresses whose `totalArmAmount = 0` (committed but fully pro-rata'd out). Count should match all addresses with at least one `Committed` event.
-- [ ] All `AllocatedHop` events emitted (one per (address, hop) with `armAmount > 0`)
-- [ ] Settlement invariant: for a sample of addresses, confirm `sum(AllocatedHop.armAmount) == Allocated.totalArmAmount`
-- [ ] Unsold ARM: `ARM.balanceOf(crowdfundContract)` = `MAX_SALE - allocatedArm` (sweepable)
-- [ ] Update observer/committer to "FINALIZED" state (should happen automatically from events)
-- [ ] Announce to participants: "Crowdfund finalized — ARM claims and refunds now available"
-
----
-
-### Path B: Phased finalization
-
-#### Step 1: Call `finalize()` (allocation only)
-
-| | |
-|---|---|
-| **Actor** | Anyone (typically ops) |
-| **Action** | Call `finalize()` — this computes and stores allocations but does not emit settlement events |
-| **Preconditions** | Pre-finalization go/no-go checkpoint passed; phased decision made |
-| **On-chain confirmation** | `Finalized` event emitted; `finalized == true` on-chain; NO `Allocated` or `AllocatedHop` events yet; USDC transferred to treasury (success path) |
-| **Fallback** | If tx reverts: check preconditions |
-
-Record: `finalize_tx = [hash]`, `refundMode = [true/false]`
-
-If `refundMode == true`: proceed to §6.4. No settlement events are emitted in phased mode for refundMode.
-
-#### Step 2: Emit settlement in batches
-
-| | |
-|---|---|
-| **Actor** | Anyone (typically ops) |
-| **Action** | Call `emitSettlement(startIndex, count)` repeatedly until `SettlementComplete` is emitted |
-| **Preconditions** | `finalize()` succeeded; `refundMode == false`; batches must be non-overlapping and sequential |
-| **On-chain confirmation** | `Allocated` + `AllocatedHop` events emitted for each batch; final batch emits `SettlementComplete` |
-| **Fallback** | If a batch tx fails: retry with same `startIndex`; do not advance index until confirmed |
-
-Suggested batch size: start with 50 participants per batch; adjust based on gas. Monitor observer for "Settlement in progress" state during batching.
-
-#### Step 3: Verify settlement complete
-
-- [ ] `SettlementComplete` event emitted
-- [ ] All `Allocated` events present — one per participating address, including zero-ARM addresses
-- [ ] Observer transitions from "Settlement in progress" to "FINALIZED"
-- [ ] Proceed to Step 3 of Path A for remaining post-finalization checks
+- [ ] Aggregate state is correctly written: read `saleSize`, `ceilings[]`, `hopDemand[]`, `totalAllocatedArm`, `totalArmTransferred == 0` from contract
+- [ ] Verify `computeAllocation(address)` returns correct values for a sample of known participants (spot-check against manual calculation)
+- [ ] Unsold ARM: `ARM.balanceOf(crowdfundContract)` > `totalAllocatedArm` (unsold portion is sweepable)
+- [ ] No `Allocated` or `AllocatedHop` events yet — those are emitted at `claim()` time, not at finalization
+- [ ] Update observer/committer to "FINALIZED" state (should happen automatically from `Finalized` event)
+- [ ] Announce to participants: "Crowdfund finalized — ARM claims and refunds now available via `claim(delegate)`"
 
 ---
 
@@ -413,17 +366,19 @@ Record: `cancel_tx = [hash]`, `block = [number]`, `rationale = [description]`
 |---|---|
 | **Actor** | Anyone (typically ops) |
 | **Action** | Call `withdrawUnallocatedArm()` |
-| **Preconditions** | `finalized == true`; unsold ARM > 0 (i.e. not all 1,800,000 ARM was allocated) |
-| **On-chain confirmation** | `ARM.balanceOf(treasury)` increases by `MAX_SALE - allocatedArm` |
+| **Preconditions** | `finalized == true`; within 3-year deadline; unsold ARM > 0 |
+| **On-chain confirmation** | `ARM.balanceOf(treasury)` increases by `1,800,000 - totalAllocatedArm` |
 | **Fallback** | If nothing to sweep (fully allocated): no action needed |
 
 ### Claims monitoring
 
-Monitor `ArmClaimed` and `RefundClaimed` events. No operator action required — these are participant-initiated. Track participation rate to identify participants who may need reminders.
+Monitor `Allocated` and `RefundClaimed` events. No operator action required — these are participant-initiated. `Allocated` events are emitted at `claim()` time and include `armTransferred` (actual ARM sent — 0 if claimed after 3-year expiry), `refundUsdc` (USDC refund paid), and `delegate` (delegation target). Track participation rate to identify participants who may need reminders.
+
+The `computeAllocation(address)` view function can be used to check any participant's theoretical entitlement at any time after finalization — useful for support inquiries.
 
 Suggested monitoring thresholds (first 30 days post-finalization):
-- Alert if < 50% of participants have claimed ARM after 14 days
-- Alert if > 10% of refund USDC remains unclaimed after 30 days
+- Alert if < 50% of participants have claimed via `claim()` after 14 days
+- Alert if total `armTransferred` (from `Allocated` events) < 50% of `totalAllocatedArm` after 14 days
 
 ### 3-year deadline sweep
 
@@ -434,8 +389,8 @@ When `block.timestamp > finalization_timestamp + (3 * 365 * 24 * 3600)`:
 | | |
 |---|---|
 | **Actor** | Anyone (typically treasury ops) |
-| **Action** | Call `withdrawUnallocatedArm()` — sweeps all remaining ARM (allocated-but-unclaimed) |
-| **Preconditions** | `block.timestamp > finalization_timestamp + (3 × 365 × 24 × 3600)` — strict post-deadline. Claims are available *through* the deadline; `withdrawUnallocatedArm()` for unclaimed ARM is only eligible *after* the deadline passes. |
+| **Action** | Call `withdrawUnallocatedArm()` — sweeps `1,800,000 - totalArmTransferred` (all remaining ARM: unsold + allocated-but-unclaimed + forfeited by post-expiry claimants) |
+| **Preconditions** | `block.timestamp > finalization_timestamp + (3 × 365 × 24 × 3600)` — strict post-deadline. Claims are available *through* the deadline; the expanded sweep formula (using `totalArmTransferred` instead of `totalAllocatedArm`) is only eligible *after* the deadline passes. |
 | **On-chain confirmation** | `ARM.balanceOf(crowdfundContract)` = 0; treasury ARM balance increases by the swept amount |
 | **Fallback** | If contract ARM balance already 0: nothing to sweep; verify no ARM was accidentally sent to the contract address |
 
@@ -512,15 +467,17 @@ When `block.timestamp > finalization_timestamp + (3 * 365 * 24 * 3600)`:
 
 ### 9.6 Gas too high for finalization
 
-**Detection:** `eth_estimateGas` for `finalize()` exceeds block gas limit, or `finalize()` tx reverts with out-of-gas.
+**Detection:** `eth_estimateGas` for `finalize()` exceeds expected range (3-5M), or `finalize()` tx reverts with out-of-gas.
 
-**If the contract was deployed in phased mode:** This is expected. `finalize()` stores allocations without emitting settlement events. Proceed to §6, Path B to emit settlement in batches via `emitSettlement()`.
+Under lazy settlement, `finalize()` writes only aggregate state — it should be well within block gas limits at ~800 participants. If gas is unexpectedly high, investigate:
 
-**If the contract was deployed in single-tx mode and `finalize()` reverts with out-of-gas:** The transaction reverted atomically — no state was written. Verify `finalized == false` on-chain. This means the deployed contract cannot finalize with the current participant count. Options:
-- If the implementation supports automatic fallback (gas-sensitive branching): retry with phased behavior enabled
-- If the implementation uses a compile-time mode flag: redeployment with phased mode is required
+- **Participant count higher than expected?** More participants = more SLOADs during `hopDemand` iteration. Check actual participant count against the ~800 estimate.
+- **Storage layout issue?** Cold reads (2,100 gas) vs warm reads (100 gas) depend on storage packing. If participant data is spread across many storage slots, cold read costs accumulate.
+- **Contract bug?** `finalize()` should not be writing per-participant state. If it is, the lazy settlement architecture is not correctly implemented.
 
-**Prevention:** Gas testing during development should determine the mode before deployment. The implementation test spec (S16: maximum network gas fixture) exists specifically to catch this.
+**If `finalize()` reverts:** The transaction reverted atomically — no state was written. Verify `finalized == false` on-chain. Investigate root cause before retrying. Gas estimation should have caught this in pre-finalization checkpoint.
+
+**Prevention:** Gas benchmarking during development with realistic participant and slot distributions (see IMPLEMENTATION_TEST.md S16).
 
 ---
 
@@ -580,11 +537,11 @@ Every irreversible action must be logged here before it is executed. This is the
 | 1 | | | | | | | |
 | ... | | | | | | | |
 
-### Settlement mode confirmation log
+### Finalization gas benchmark log
 
-| Timestamp | Actor | Deployed mode | Gas estimate at max network | Rationale |
-|---|---|---|---|---|
-| | | single-tx / phased | | |
+| Timestamp | Actor | Participant count | Gas estimate | Actual gas used | Notes |
+|---|---|---|---|---|---|
+| | | | | | |
 
 ### cancel() decision log
 
@@ -638,7 +595,7 @@ Every irreversible action must be logged here before it is executed. This is the
 | `capped_demand ≥ $1,000,000` (else refunds auto-available) | ☐ | Ops |
 | `finalized == false` | ☐ | Ops |
 | `cancelled == false` | ☐ | Ops |
-| Deployed settlement mode confirmed (single-tx or phased) and gas estimate verified | ☐ | Ops |
+| `finalize()` gas estimate verified (should be 3-5M under lazy settlement) | ☐ | Ops |
 | Treasury standing by to verify proceeds | ☐ | Treasury |
 | Participant announcement drafted for both success and refundMode outcomes | ☐ | Ops |
 
