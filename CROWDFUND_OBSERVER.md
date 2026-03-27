@@ -23,12 +23,13 @@ All data comes from on-chain events emitted by `ArmadaCrowdfund`. No backend, no
 | `Finalized` | sale_size, allocated_arm, net_proceeds, refundMode | Settlement overlay / final state banner. `refundMode` distinguishes success from refund-only finalization. |
 | `Allocated` | address, totalArmAmount, totalRefundAmount | Aggregate per-address settlement. Only emitted on success path (not refundMode). |
 | `AllocatedHop` | address, hop, armAmount | Per-hop ARM allocation. Only emitted when armAmount > 0, success path only. Populates per-hop breakdown in row expansion and tree node detail. |
-| `ArmClaimed` | address, arm_amount | Marks address as ARM-claimed in table |
+| `Allocated` | address, armTransferred, refundUsdc, delegate | Emitted at `claim()` time. Shows actual ARM sent (0 after expiry) and refund paid. |
+| `AllocatedHop` | address, hop, acceptedUsdc | Emitted at `claim()` time. Per-hop accepted USDC (theoretical, not affected by expiry). |
 | `RefundClaimed` | address, usdc_amount | Marks address as refund-claimed in table |
 | `Cancelled` | — | Cancel state indicator |
-| `SettlementComplete` | — | Phased fallback only. Signals all `Allocated` and `AllocatedHop` events have been emitted. Observer transitions from "settlement in progress" to final display. Under single-tx finalization, not needed — all events arrive with `Finalized`. |
+| `RefundClaimed` | address, usdc_amount | Marks address as refund-claimed (refundMode/cancel paths only) |
 
-Post-finalization per-address allocations come from `Allocated` (aggregate) and `AllocatedHop` (per-hop detail) events emitted during finalization — by `finalize()` in single-tx mode, or by `emitSettlement()` in phased mode. The observer does not replay the allocation algorithm client-side. **Settlement invariant:** for each address, `sum(AllocatedHop.armAmount) == Allocated.totalArmAmount`. If neither event is present for an address (refundMode or cancel), the address shows full refund eligibility derived from its `Committed` totals. Under phased settlement, the observer treats `Finalized` without `SettlementComplete` as settlement-in-progress.
+Post-finalization per-address allocations are available in two ways: (1) **immediately** via the `computeAllocation(address)` view function, which returns theoretical `(armAmount, refundUsdc)` for any participant using on-chain aggregate state; and (2) **incrementally** via `Allocated` and `AllocatedHop` events emitted at `claim()` time as each participant claims. **Events alone are insufficient to derive pre-claim allocations** — the observer must query `computeAllocation()` for participants who have not yet claimed. If neither event is present for an address (refundMode or cancel), the address shows full refund eligibility derived from its `Committed` totals.
 
 ### Derived state
 
@@ -68,7 +69,7 @@ address_summary: Map<address, {
   allocated_arm: number | null,          // total ARM (from Allocated event)
   allocated_per_hop: Map<hop, number>,   // ARM per hop (from AllocatedHop events)
   refund_usdc: number | null,            // total refund (from Allocated event)
-  // Claim status (populated from ArmClaimed / RefundClaimed events):
+  // Claim status (populated from Allocated / RefundClaimed events):
   arm_claimed: boolean,
   refund_claimed: boolean,
 }>
@@ -223,14 +224,14 @@ Configurable with ordered fallback list — try primary, fall back to secondary 
 
 ## State Transitions
 
-The interface reflects the contract's state machine. There is no `FINALIZING` state — finalization is a single atomic transaction; the UI transitions directly from "awaiting finalization" to "finalized." (If phased finalization is implemented as a gas fallback, the UI shows "Settlement in progress — allocation data arriving" between `Finalized` event and `SettlementComplete`. See CROWDFUND.md Gas Considerations.)
+The interface reflects the contract's state machine. There is no `FINALIZING` state — finalization is a single atomic transaction; the UI transitions directly from "awaiting finalization" to "finalized." Under lazy settlement, `Allocated` and `AllocatedHop` events arrive incrementally as participants call `claim()`, not at finalization time. The observer uses `computeAllocation(address)` to display theoretical allocations for participants who have not yet claimed.
 
 | Contract state | UI behavior |
 |---|---|
 | Pre-commitment (ARM not loaded) | "Crowdfund not yet open" — empty state |
 | Commitment window open | Full tree + table, live updates, stats banner with countdown |
 | Commitment deadline passed, not finalized | Stats banner shows "Awaiting finalization." Tree and table remain. If capped_demand < MIN, show "Below minimum raise — refunds available." |
-| Finalized (success) | Stats banner shows final figures. "FINALIZED" badge. Allocated column appears in table showing total ARM allocated and USDC refund per address (from `Allocated` events). Row expansion shows per-hop ARM breakdown (from `AllocatedHop` events). Claimed column tracks claim status as `ArmClaimed`/`RefundClaimed` events arrive. Tree nodes gain an allocation indicator (ring or label showing allocated vs. committed). |
+| Finalized (success) | Stats banner shows final figures. "FINALIZED" badge. Allocated column appears in table showing theoretical ARM allocation and USDC refund per address (from `computeAllocation()` view function, available immediately). Row expansion shows per-hop breakdown. As participants call `claim()`, `Allocated` events confirm actual settlement — claimed column tracks claim status. Tree nodes gain an allocation indicator (ring or label showing allocated vs. committed). |
 | Finalized (refundMode) | "REFUND MODE" indicator. No `Allocated` or `AllocatedHop` events emitted. All addresses show "Full refund available" derived from `Committed` totals. Claimed column tracks refund claims only. |
 | Cancelled | "CANCELLED" indicator. No allocations. "Full refund available." Claimed column tracks refund claims. |
 
