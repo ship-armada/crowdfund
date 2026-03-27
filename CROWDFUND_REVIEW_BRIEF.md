@@ -17,7 +17,7 @@ Treat it as potentially wrong. Your job is to find anything that would change im
 - **Invite link nonces: any `uint256 > 0`.** Nonce 0 is reserved as the sentinel for direct invites (`invite()` emits `Invited(..., nonce=0)`). `commitWithInvite()` requires `nonce > 0`. Links have 5-day default expiry via `deadline` in the signed payload. Revocable via `revokeInviteNonce(nonce)`.
 - **EIP-1271 support for invite signatures.** Contract uses OpenZeppelin's `SignatureChecker.isValidSignatureNow()` — supports both EOA and smart contract wallet inviters.
 - **Dual settlement events.** `Allocated(address, totalArmAmount, totalRefundAmount)` for aggregate per-address settlement + `AllocatedHop(address, hop, armAmount)` for per-hop transparency. Settlement invariant: `sum(AllocatedHop.armAmount) == Allocated.totalArmAmount` per address. Neither emitted in refundMode.
-- **Single-tx finalization preferred; phased fallback acceptable.** In phased mode, `finalize()` emits only `Finalized`; `emitSettlement(startIndex, count)` emits `Allocated` + `AllocatedHop` in monotonic batches; final batch emits `SettlementComplete`. `claim()` is available immediately after `finalize()` regardless of event emission.
+- **Lazy settlement architecture.** `finalize()` writes aggregate state only (zero per-participant storage). `claim()` computes per-participant allocation on-the-fly via canonical `computeAllocation()` view function. `Allocated` and `AllocatedHop` events emitted at `claim()` time. No `emitSettlement()`, no settlement mode selection.
 - **Hop-2 has no enforced ceiling — only a floor.** `HOP_CEILING_BPS` contains no entry for hop-2. Its effective ceiling is `hop2_floor + hop1_leftover`, which can range from $60k to the full sale size.
 - **Over-cap deposits are permitted and refunded** (not reverted at submission).
 - **Refunds never expire.** `claimRefund()` has no deadline.
@@ -129,10 +129,10 @@ Do not re-find these; verify they are cleanly resolved:
 26. Per-hop settlement impossible from aggregate-only events → dual event model (`Allocated` + `AllocatedHop`)
 27. `fromHop`/`toHop` parameter inconsistency → standardized on `fromHop`
 28. ARM loaded missing from invite preconditions → added to `invite()`, `addSeed()`, `launchTeamInvite()`
-29. `emitSettlement` not in function table → added with monotonic-batch precondition
+29. `emitSettlement` not in function table → added with monotonic-batch precondition **(superseded: `emitSettlement` removed under lazy settlement)**
 30. `revokeInviteNonce(0)` should revert → added `nonce > 0` check
-31. `Allocated`/`AllocatedHop` emitters didn't include `emitSettlement()` → fixed in events table
-32. Observer missing `SettlementComplete` in consumed events → added
+31. `Allocated`/`AllocatedHop` emitters didn't include `emitSettlement()` → fixed in events table **(superseded: events now emitted at `claim()` time only)**
+32. Observer missing `SettlementComplete` in consumed events → added **(superseded: `SettlementComplete` removed under lazy settlement)**
 33. `finalize()` effects didn't mention refund recording → added "records refund amounts"
 34. Pseudocode didn't track per-hop allocations → added `hop_allocations` dict for `AllocatedHop` events
 35. Pseudocode `invite_slots` didn't include `SeedAdded` for hop-0 → renamed to `participation_slots` with explicit slot sources
@@ -159,10 +159,10 @@ For each external function, verify: allowed states, revert conditions, state cha
 | `commitWithInvite(inviter, fromHop, nonce, deadline, signature, amount)` | ARM loaded, pre-deadline, not cancelled/finalized | Invalid/expired signature; nonce ≤ 0 or consumed/revoked; inviter out of slots; not ARM loaded | Creates slot + records commitment atomically; emits `Invited(..., nonce)` + `Committed` | USDC in |
 | `revokeInviteNonce(nonce)` | Any (inviter is msg.sender) | nonce == 0; already consumed/revoked | Marks nonce permanently revoked; emits `InviteNonceRevoked` | — |
 | `commit(hop, amount)` | ARM loaded, pre-deadline, not cancelled/finalized | No participation slot at this hop; not ARM loaded | Records commitment; emits `Committed` | USDC in |
-| `finalize()` | Post-deadline, not finalized, not cancelled, capped_demand ≥ MIN | Already finalized; cancelled; capped_demand < MIN | Sets `finalized = true`; records allocations/refunds; AND sets `refundMode = true` if net_proceeds < MIN. Emits `Finalized` (+ `Allocated`/`AllocatedHop` in single-tx mode) | Net proceeds out to treasury (success path only) |
-| `emitSettlement(startIndex, count)` | Finalized, not refundMode, phased fallback only | Not finalized; refundMode; out-of-order batch | Emits `Allocated` + `AllocatedHop` for batch; `SettlementComplete` on final batch | — |
+| `finalize()` | Post-deadline, not finalized, not cancelled, capped_demand ≥ MIN | Already finalized; cancelled; capped_demand < MIN | Writes aggregate state only: `saleSize`, `ceilings[]`, `hopDemand[]`, `totalAllocatedArm`, `totalArmTransferred = 0`. Sets `finalized = true`; AND sets `refundMode = true` if `totalAllocatedUsdc < MIN`. Emits `Finalized`. Zero per-participant storage writes. | Net proceeds out to treasury (success path only) |
+| `computeAllocation(address)` | Finalized, not refundMode | Not finalized; refundMode | Pure view: returns `(armAmount, refundUsdc)`. Canonical computation — same logic as `claim()` minus side effects. | — |
 | `claimRefund()` | refundMode OR (post-deadline AND !finalized AND capped_demand < MIN) OR cancelled | None of those conditions; already claimed | — | USDC out to participant |
-| `claim(delegate)` | Finalized AND NOT refundMode, within 3-year deadline | Not finalized; refundMode == true; expired; already claimed | Records ARM claimed; records delegation; emits `ArmClaimed` | ARM out to participant |
+| `claim(delegate)` | Finalized AND NOT refundMode; not already claimed | Not finalized; refundMode == true; already claimed | Computes allocation via `computeAllocation()`. Sets `claimed = true`. Within 3yr: transfers ARM + delegation + increments `totalArmTransferred`. Always transfers refund USDC. Emits `Allocated(armTransferred, refundUsdc, delegate)` + `AllocatedHop`. `nonReentrant`. | ARM out (within 3yr) + refund USDC out |
 | `cancel()` | Pre-finalization | Already finalized | Sets cancelled permanently; emits `Cancelled` | — |
 | `withdrawUnallocatedArm()` | Finalized (unsold) OR post-3yr (unclaimed) OR cancelled (all 1.8M) | None of those conditions | — | ARM out to treasury |
 
@@ -180,8 +180,8 @@ For each external function, verify: allowed states, revert conditions, state cha
 - Is signature verification via `SignatureChecker` (EOA + EIP-1271)?
 
 ### 4. Contract events
-- Are `Allocated` and `AllocatedHop` emitted by `finalize()` (single-tx) or `emitSettlement()` (phased)?
-- Is `SettlementComplete` emitted exactly once on the final `emitSettlement()` batch?
+- Does `computeAllocation()` return correct theoretical entitlement for all participant types (single-hop, multi-hop, multi-slot, zero-allocation)?
+- Are `Allocated` and `AllocatedHop` emitted only at `claim()` time (not at `finalize()` time)?
 - Does `Invited` include `nonce` (0 for direct, > 0 for link-based)?
 - Is the settlement invariant stated: `sum(AllocatedHop.armAmount) == Allocated.totalArmAmount`?
 - Are `Allocated`/`AllocatedHop` absent in refundMode?
@@ -231,7 +231,7 @@ Run through the pseudocode and verify both invariants:
 19. Invite link: `revokeInviteNonce(nonce)` then attempt redemption → revert
 20. Invite link: `revokeInviteNonce(0)` → revert (nonce 0 reserved)
 21. Settlement invariant: for each address, verify `sum(AllocatedHop.armAmount) == Allocated.totalArmAmount`
-22. Phased settlement: `emitSettlement()` batches are monotonic; `SettlementComplete` emitted on final batch; `claim()` works before events are fully emitted
+22. Lazy settlement: `finalize()` writes aggregate state only; `claim()` computes allocation via `computeAllocation()`; `Allocated`/`AllocatedHop` emitted at claim time; post-expiry claims transfer refund only
 
 ---
 
