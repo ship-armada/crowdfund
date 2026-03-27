@@ -15,7 +15,7 @@ If two documents ever conflict, the higher-numbered document loses. This hierarc
 | Priority | Document | Controls | Notes |
 |---|---|---|---|
 | **1 (highest)** | `CROWDFUND.md` | Mechanism, state machine, contract interface, allocation logic, settlement model, event semantics | The spec. Everything implements from this. |
-| **2** | `PARAMETER_MANIFEST.md` | Every concrete deployment value — addresses, timestamps, constants, decimal encodings, settlement mode | The numbers. For concrete deployment values (addresses, timestamps, decimal-encoded constants), this document takes precedence over human-readable values in CROWDFUND.md. For mechanism rules and behavioral specifications, CROWDFUND.md takes precedence. |
+| **2** | `PARAMETER_MANIFEST.md` | Every concrete deployment value — addresses, timestamps, constants, decimal encodings, gas benchmarks | The numbers. For concrete deployment values (addresses, timestamps, decimal-encoded constants), this document takes precedence over human-readable values in CROWDFUND.md. For mechanism rules and behavioral specifications, CROWDFUND.md takes precedence. |
 | **3** | `IMPLEMENTATION_TEST.md` | Test plan, invariants, scenario matrix, fuzz axes, event correctness, exit criteria | The verification surface. All tests derive from CROWDFUND.md. |
 | **4** | `OPERATIONS.md` | Deployment sequence, operator procedures, failure runbook, decision logs | The operational layer. Procedures must be consistent with CROWDFUND.md but do not override it. |
 | **5** | `MONITORING.md` | Alert rules, derived state model, threshold-based signals, dashboard requirements | The observability layer. Alerts derive from CROWDFUND.md's event model. |
@@ -36,8 +36,8 @@ The following must exist in the repository before audit handoff.
 
 | Artifact | Description | Traces to |
 |---|---|---|
-| `ArmadaCrowdfund.sol` | Core crowdfund contract — all 13 external functions per CROWDFUND.md §Contract Interface | CROWDFUND.md §Contract Interface |
-| Settlement mode implementation | Single-tx or phased, per PARAMETER_MANIFEST.md §9. If phased: `emitSettlement()` must be present. If single-tx: `emitSettlement()` should revert. | CROWDFUND.md §Gas Considerations |
+| `ArmadaCrowdfund.sol` | Core crowdfund contract — external functions per CROWDFUND.md §Contract Interface, including `computeAllocation()` view function | CROWDFUND.md §Contract Interface |
+| Lazy settlement architecture | `finalize()` writes aggregate state only (zero per-participant storage). `claim()` computes allocation on-the-fly via `computeAllocation()`. No `emitSettlement()`. | CROWDFUND.md §Finalization, §Gas Considerations |
 | EIP-712 invite signature verification | `commitWithInvite()` with `SignatureChecker.isValidSignatureNow()` (EOA + EIP-1271) | CROWDFUND.md §EIP-712 Typed Data |
 
 ### 2.2 Interfaces
@@ -87,16 +87,18 @@ Ian must produce the following before handoff. Each item has a pass/fail criteri
 | All revert tests | Green |
 | All deterministic scenarios S1–S19 | Green |
 | All global invariants under fuzzing (4.1–4.12) | No invariant break after minimum 10,000 fuzz runs |
-| Settlement mode equivalence (4.12) | Required only if both single-tx and phased paths exist in the deployed code. If only one mode is implemented, this evidence is not required. If both exist: same economic outputs must be proven under identical inputs. |
-| All event correctness tests | Green, including ordering guarantees |
+| `computeAllocation()` / `claim()` equivalence (4.12) | For all participants, view function output matches actual claim output |
+| All event correctness tests | Green, including claim-time ordering guarantees |
 | Observer and committer compatibility tests | Green |
 
 ### 3.2 Gas measurements
 
 | Evidence | Pass criterion |
 |---|---|
-| S16 max-network finalization gas | Measured and recorded |
-| Settlement mode confirmed | If S16 gas < 25M: single-tx confirmed viable. If > 25M: phased mode required. Recorded in PARAMETER_MANIFEST.md §9. |
+| S16 max-network `finalize()` gas | Measured and recorded. Expected 3-5M under lazy settlement (aggregate-only). |
+| `claim()` gas per participant | Measured. Expected ~200k. |
+| `computeAllocation()` gas (view) | Measured. Should be negligible. |
+| Slot-count model confirmed | `slotCount[address][hop]` is a counter, not a boolean. Required for `computeAllocation()` correctness. |
 | Per-function gas report | Generated and included in package |
 
 ### 3.3 Spec traceability
@@ -159,13 +161,14 @@ These are architectural decisions that constrain the implementation. They are no
 
 | Assumption | Implication |
 |---|---|
-| Settlement mode is a deployment property | Determined during development/gas testing. Not selected at runtime by the operator. Recorded in PARAMETER_MANIFEST.md §9. |
-| Single-tx and phased must produce identical economics | Same `Allocated.totalArmAmount`, same refunds, same `AllocatedHop.armAmount` per (address, hop). Only event timing differs. |
-| Observer is purely event-driven | No view functions required for the core observer display. All state reconstructable from events. |
-| Committer assumes `claim()` is available immediately after `finalize()` | Event emission is a transparency layer, not a claim gate. |
+| Lazy settlement architecture | `finalize()` writes aggregate state only (zero per-participant storage). `claim()` computes allocation on-the-fly via `computeAllocation()`. No `emitSettlement()`, no settlement mode selection. |
+| `computeAllocation()` is canonical and pure | Same logic path as `claim()` minus side effects. Deterministic, order-independent. View function output must match actual claim output for all participants. |
+| Slot-count model is a hard requirement | `slotCount[address][hop]` must be a counter that increments per invite. Cap math, self-fill analysis, `hopDemand`, and `computeAllocation()` all depend on this. If the contract models hop access as a boolean, the spec is incorrect. |
+| Observer uses `computeAllocation()` for pre-claim display | Events alone are insufficient for pre-claim allocation display. Observer calls `computeAllocation(address)` after `Finalized` for theoretical allocations. `Allocated` events arrive incrementally at `claim()` time. |
+| Committer assumes `claim()` is available immediately after `finalize()` | Theoretical allocations queryable via `computeAllocation()` immediately. No need to wait for events. |
 | No backend in core protocol | Observer and committer are client-side, RPC-direct. No server-side indexer required. |
 | The contract has no upgradability mechanism | No proxy, no UUPS, no diamond. The deployed bytecode is final. This is an implementation constraint — CROWDFUND.md says "Post-finalization, all privileged functions are permanently inactive" and PARAMETER_MANIFEST.md says "no admin-mutable parameters," which together imply non-upgradeability. Ian should confirm this is the implementation approach. |
-| Settlement event ordering is guaranteed | For each participant: `Allocated` before that participant's `AllocatedHop` events within the same transaction/batch. |
+| Claim event ordering is guaranteed | For each `claim()` call: `Allocated` before that participant's `AllocatedHop` events within the same transaction. |
 
 ---
 
@@ -189,11 +192,12 @@ Final sign-off before sending the package to auditors.
 |---|---|---|
 | All code artifacts in §2 exist in repo | ☐ | Ian |
 | All tests pass per §3.1 | ☐ | Ian |
-| Gas measurements recorded per §3.2 | ☐ | Ian |
+| Gas measurements recorded per §3.2 (including `finalize()`, `claim()`, `computeAllocation()`) | ☐ | Ian |
 | SPEC_TRACEABILITY.md complete per §3.3 | ☐ | Ian |
 | Testnet deployment dry run passed per §3.4 | ☐ | Ian + Ops |
 | PARAMETER_MANIFEST.md fully filled (no `[TBD]` fields) | ☐ | Gavin + Ops |
-| Settlement mode confirmed and recorded | ☐ | Ian |
+| Slot-count model confirmed in code | ☐ | Ian |
+| `computeAllocation()` view function implemented and tested | ☐ | Ian |
 | §6 Open Questions is empty | ☐ | Gavin |
 | All 8 spec documents in `/outputs/` are the canonical versions (excluding CROWDFUND_ADDITIONS.md) | ☐ | Gavin |
 | AUDIT_HANDOFF.md itself reviewed against current state of all docs (counts, references, paths) | ☐ | Gavin |
