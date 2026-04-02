@@ -68,10 +68,11 @@ HOP_CAP         = {0: 15_000, 1: 4_000, 2: 1_000}  # USDC per slot per hop
 10. If `net_proceeds < MINIMUM_RAISE`: set `finalized = true` AND `refundMode = true`; no treasury transfer; `claimRefund()` returns full raw deposits; `claim()` reverts
 11. `refunds[addr] = total_deposited[addr] - allocations.get(addr, 0) × PRICE`
 
-**`claimRefund()` eligibility — all three conditions:**
+**`claimRefund()` eligibility — two conditions:**
 1. `refundMode == true`
-2. `block.timestamp > commitmentDeadline AND !finalized AND capped_demand < MINIMUM_RAISE`
-3. `cancelled == true`
+2. `cancelled == true`
+
+The former deadline fallback path (`post-deadline AND !finalized AND capped_demand < MINIMUM_RAISE`) has been removed. All post-deadline outcomes now flow through `finalize()`, which sets `refundMode = true` when `totalAllocatedUsdc < MINIMUM_RAISE`.
 
 **`withdrawUnallocatedArm()` — three eligibility windows:**
 - Post-finalization: sweeps `MAX_SALE - allocated_arm` (unsold + unused expansion reserve)
@@ -161,7 +162,7 @@ For each external function, verify: allowed states, revert conditions, state cha
 | `commit(hop, amount)` | ARM loaded, pre-deadline, not cancelled/finalized | No participation slot at this hop; not ARM loaded | Records commitment; emits `Committed` | USDC in |
 | `finalize()` | Post-deadline, not finalized, not cancelled, capped_demand ≥ MIN | Already finalized; cancelled; capped_demand < MIN | Writes aggregate state only: `saleSize`, `ceilings[]`, `hopDemand[]`, `totalAllocatedArm`, `totalArmTransferred = 0`. Sets `finalized = true`; AND sets `refundMode = true` if `totalAllocatedUsdc < MIN`. Emits `Finalized`. Zero per-participant storage writes. | Net proceeds out to treasury (success path only) |
 | `computeAllocation(address)` | Finalized, not refundMode | Not finalized; refundMode | Pure view: returns `(armAmount, refundUsdc)`. Canonical computation — same logic as `claim()` minus side effects. | — |
-| `claimRefund()` | refundMode OR (post-deadline AND !finalized AND capped_demand < MIN) OR cancelled | None of those conditions; already claimed | — | USDC out to participant |
+| `claimRefund()` | refundMode OR cancelled | None of those conditions; already claimed | — | USDC out to participant |
 | `claim(delegate)` | Finalized AND NOT refundMode; not already claimed | Not finalized; refundMode == true; already claimed | Computes allocation via `computeAllocation()`. Sets `claimed = true`. Within 3yr: transfers ARM + delegation + increments `totalArmTransferred`. Always transfers refund USDC. Emits `Allocated(armTransferred, refundUsdc, delegate)` + `AllocatedHop`. `nonReentrant`. | ARM out (within 3yr) + refund USDC out |
 | `cancel()` | Pre-finalization | Already finalized | Sets cancelled permanently; emits `Cancelled` | — |
 | `withdrawUnallocatedArm()` | Finalized (unsold) OR post-3yr (unclaimed) OR cancelled (all 1.8M) | None of those conditions | — | ARM out to treasury |
