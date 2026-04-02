@@ -257,7 +257,7 @@ After commitment deadline passes (day 21+), before calling `finalize()`:
 | `finalized == false` | Read from contract state | Ops |
 | Gas estimation for `finalize()` | Run `eth_estimateGas`; compare to block gas limit (should be 3-5M under lazy settlement) | Ops |
 
-**If `capped_demand < MINIMUM_RAISE`:** Do not call `finalize()`. Refunds are already available via `claimRefund()` — the eligibility condition `(post-deadline AND !finalized AND capped_demand < MIN)` activates automatically. Announce to participants immediately. No on-chain action required.
+**If `capped_demand < MINIMUM_RAISE`:** Call `finalize()` anyway — it is permissionless and will set `refundMode = true`, enabling refunds via `claimRefund()` and ARM recovery via `withdrawUnallocatedArm()`. Announce to participants immediately.
 
 ---
 
@@ -508,7 +508,7 @@ For the full cancel procedure see §7. This failure scenario covers the decision
 - Critical security disclosure that makes proceeding harmful
 
 **Not valid reasons:**
-- Low demand (refunds automatically available when capped_demand < MINIMUM_RAISE and deadline passes)
+- Low demand: call `finalize()` — sets `refundMode = true`, enabling refunds and ARM recovery
 - UI outage
 - Team disagreement about timing
 
@@ -592,11 +592,11 @@ Every irreversible action must be logged here before it is executed. This is the
 | Condition | Status | Owner |
 |---|---|---|
 | `block.timestamp > commitmentDeadline` | ☐ | Ops |
-| `capped_demand ≥ $1,000,000` (else refunds auto-available) | ☐ | Ops |
+| `capped_demand` reviewed (if sub-minimum, finalize will set refundMode) | ☐ | Ops |
 | `finalized == false` | ☐ | Ops |
 | `cancelled == false` | ☐ | Ops |
 | `finalize()` gas estimate verified (should be 3-5M under lazy settlement) | ☐ | Ops |
 | Treasury standing by to verify proceeds | ☐ | Treasury |
 | Participant announcement drafted for both success and refundMode outcomes | ☐ | Ops |
 
-**If capped_demand < MINIMUM_RAISE:** Do not call `finalize()`. Refunds are already available. Announce immediately.
+**If capped_demand < MINIMUM_RAISE:** Call `finalize()` anyway — it sets `refundMode = true`. Announce immediately.
