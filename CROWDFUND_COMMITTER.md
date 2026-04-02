@@ -445,10 +445,10 @@ Claims are available after the crowdfund is finalized.
 Current status: OPEN (14 days remaining)
 ```
 
-Or, if the deadline has passed without minimum raise:
+Or, if finalization has set refundMode (sub-minimum demand):
 ```
-The commitment deadline has passed and capped demand ($870,000) is below
-the minimum raise ($1,000,000). You may withdraw your full deposit.
+The crowdfund has been finalized in refund mode — total demand ($870,000)
+was below the minimum raise ($1,000,000). You may withdraw your full deposit.
 
   Your deposit: $19,000 USDC
   [ Claim Refund ]
