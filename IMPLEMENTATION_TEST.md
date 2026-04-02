@@ -314,8 +314,7 @@ Test:
 Test eligibility paths:
 
 1. `refundMode == true`
-2. post-deadline, not finalized, `capped_demand < MINIMUM_RAISE`
-3. cancelled
+2. cancelled
 
 Test:
 
@@ -693,4 +692,3 @@ Implementation is ready for audit only when:
 * `CrowdfundUiSurface.t.sol` — observer / committer compatibility tests (§9)
 * `CrowdfundGas.t.sol` — gas measurement fixtures (S16: max-network finalization)
 * `SPEC_TRACEABILITY.md` — mapping from spec rules to tests; every rule in `CROWDFUND.md` must appear
-
