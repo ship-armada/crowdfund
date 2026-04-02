@@ -88,7 +88,7 @@ Monitoring derives the current lifecycle phase from events and timestamps.
 | **OPEN / WEEK 1** | `ArmLoaded`; `openTimestamp ≤ now ≤ week1Deadline` |
 | **OPEN / WEEKS 2–3** | `ArmLoaded`; `week1Deadline < now ≤ commitmentDeadline` |
 | **DEADLINE PASSED / QUALIFIED / NOT FINALIZED** | `now > commitmentDeadline`; derived `capped_demand ≥ MINIMUM_RAISE`; no `Finalized`; no `Cancelled` |
-| **DEADLINE PASSED / SUB-MINIMUM / REFUNDS AVAILABLE** | `now > commitmentDeadline`; derived `capped_demand < MINIMUM_RAISE`; no `Finalized`; no `Cancelled`. Refunds auto-available — do NOT call `finalize()`. |
+| **DEADLINE PASSED / NOT FINALIZED** | `now > commitmentDeadline`; no `Finalized`; no `Cancelled`. Call `finalize()` — it determines success or refundMode. |
 | **FINALIZED / SUCCESS / CLAIMS OPEN** | `Finalized(refundMode=false)` emitted; `Allocated` events arrive incrementally as participants call `claim()`. Theoretical allocations available via `computeAllocation(address)` view function immediately after `Finalized`. |
 | **FINALIZED / SUCCESS / CLAIMS EXPIRED** | `Finalized(refundMode=false)` emitted; `block.timestamp > finalizationTimestamp + 3 years`. Late claimants via `claim()` receive refund USDC only — ARM portion forfeited. `withdrawUnallocatedArm()` now sweeps `1,800,000 - totalArmTransferred`. |
 | **FINALIZED / REFUND MODE** | `Finalized(refundMode=true)` |
@@ -261,15 +261,15 @@ Post-finalization, track:
 
 ---
 
-### A9b — Deadline passed, refunds auto-available
+### A9b — Deadline passed, sub-minimum demand
 
 | Field | Value |
 |---|---|
 | **Signal** | Absence of `Finalized` and `Cancelled` |
 | **Condition** | `now > commitmentDeadline` AND derived `capped_demand < MINIMUM_RAISE` |
 | **Severity** | P1 |
-| **Meaning** | Sale did not qualify. `claimRefund()` eligibility activates automatically — do **not** call `finalize()`. Announce to participants immediately. |
-| **Runbook** | `OPERATIONS.md` §5 pre-finalization checkpoint (capped_demand < MINIMUM_RAISE branch) |
+| **Meaning** | Sale will not qualify. Call `finalize()` — it will set `refundMode = true`, enabling refunds and ARM recovery. Announce to participants immediately. |
+| **Runbook** | `OPERATIONS.md` §5 pre-finalization checkpoint |
 
 ---
 
