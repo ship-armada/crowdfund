@@ -296,18 +296,17 @@ Deployment sequence:
 
 ### Finalization
 
-After the commitment window closes, finalization is permissionless — anyone may call `finalize()` once both conditions are met:
+After the commitment window closes, finalization is permissionless — anyone may call `finalize()` once the commitment deadline has passed. There is no minimum raise precondition on `finalize()` itself — the contract always runs the allocation math and determines the outcome:
 
-- The commitment deadline has passed, **and**
-- `capped_demand` (sum of all effective per-address per-hop balances after caps — an address committed at multiple hops contributes at each hop independently) meets or exceeds the minimum raise of **$1,000,000 USDC**
+- If `totalAllocatedUsdc >= MINIMUM_RAISE`: success path (ARM allocated, proceeds to treasury)
+- If `totalAllocatedUsdc < MINIMUM_RAISE`: sets `refundMode = true` (full refunds, no ARM allocated)
 
-If the commitment deadline passes without `capped_demand` meeting the minimum raise, the contract does not self-execute. `claimRefund()` derives eligibility from state. A participant may withdraw their full deposited USDC if and only if **any** of these conditions hold:
+This means every post-deadline outcome flows through `finalize()`. There is no separate "deadline fallback" path where refunds become available without finalization. A participant may withdraw their full deposited USDC via `claimRefund()` if and only if **any** of these conditions hold:
 
-1. `refundMode == true` — set by the post-allocation check in `finalize()` when net_proceeds < MINIMUM_RAISE
-2. `block.timestamp > commitmentDeadline && !finalized && capped_demand < MINIMUM_RAISE` — deadline passed without a qualifying raise. The `capped_demand < MINIMUM_RAISE` clause is critical: without it, a qualifying crowdfund that simply hasn't been finalized yet would incorrectly permit refunds.
-3. `cancelled == true` — Security Council invoked `cancel()`
+1. `refundMode == true` — set by `finalize()` when `totalAllocatedUsdc < MINIMUM_RAISE`
+2. `cancelled == true` — Security Council invoked `cancel()`
 
-No privileged action or separate function is required — the eligibility check is built into `claimRefund()` itself.
+No privileged action or separate function is required — the eligibility check is built into `claimRefund()` itself. Someone must call `finalize()` post-deadline for refunds to activate in the sub-minimum case, but the call is permissionless and low-cost.
 
 When `finalize()` is called:
 
@@ -317,7 +316,7 @@ When `finalize()` is called:
 2. **Per-hop effective ceilings are calculated via the waterfall pass:** hop-2 floor reserved first, hop-0 ceiling applied against the available pool, hop-0 leftover increases hop-1's effective ceiling, hop-1 leftover increases hop-2's effective ceiling. The stored `ceilings[hop]` values are the **final effective ceilings after the waterfall** — not the raw BPS ceilings from the hop table. These are the numbers `computeAllocation()` uses directly.
 3. **Per-hop aggregate demand is computed:** `finalize()` iterates all participants once to compute `hopDemand[hop]` — the sum of `effectiveUsdc(p, hop)` for all participants at that hop, where `effectiveUsdc(p, hop) = min(committed[p][hop], slotCount[p][hop] * HOP_CAP[hop])`. **Multiple slots per hop per address is a hard requirement** — the entire cap model, self-fill analysis, and `computeAllocation()` logic depend on `slotCount[p][hop]` being a counter that increments with each invite received. If the contract models caps as a single boolean "has access to this hop" rather than a slot count, this spec is incorrect and the allocation math must be redesigned.
 4. **Aggregate allocation is computed:** `totalAllocatedUsdc = sum(min(hopDemand[hop], ceilings[hop]))` across all hops. `totalAllocatedArm = totalAllocatedUsdc * ARM_PER_USDC_RATE`.
-5. **Post-allocation minimum raise check:** if `totalAllocatedUsdc < MINIMUM_RAISE ($1,000,000 USDC)`, the contract sets **both `finalized = true` and `refundMode = true`** and stops — no treasury transfer, no aggregate recording beyond the flags. Setting `finalized = true` permanently disables further calls to `finalize()` and `cancel()`. **In this branch, every participant may call `claimRefund()` to withdraw their full deposited USDC** — not a pro-rata refund, but the complete raw amount they deposited. **`claim()` reverts when `refundMode == true`.** This scenario can occur at base size when hop-0 is oversubscribed and combined later-hop demand doesn't close the gap between hop-0's ceiling ($798k) and the minimum raise ($1M). It cannot occur after expansion, where hop-0's ceiling ($1,197k) already exceeds the minimum raise. This must not revert the transaction — a revert would leave the contract permanently stuck with no path to refunds.
+5. **Post-allocation minimum raise check:** if `totalAllocatedUsdc < MINIMUM_RAISE ($1,000,000 USDC)`, the contract sets **both `finalized = true` and `refundMode = true`** and stops — no treasury transfer, no aggregate recording beyond the flags. Setting `finalized = true` permanently disables further calls to `finalize()` and `cancel()`. **In this branch, every participant may call `claimRefund()` to withdraw their full deposited USDC** — not a pro-rata refund, but the complete raw amount they deposited. **`claim()` reverts when `refundMode == true`.** This branch handles both cases: (a) `capped_demand` was below $1M (obvious failure — allocation math produces near-zero totals), and (b) `capped_demand` was above $1M but post-waterfall `totalAllocatedUsdc` fell below $1M (occurs at base size when hop-0 is oversubscribed and combined later-hop demand doesn't close the gap). Neither case can occur after expansion, where hop-0's ceiling ($1,197k) already exceeds the minimum raise. This must not revert the transaction — a revert would leave the contract permanently stuck with no path to refunds or ARM recovery.
 6. **Aggregate state is written:** `finalized = true`, `finalizationTimestamp`, `saleSize`, `ceilings[]`, `hopDemand[]`, `totalAllocatedArm`, `totalArmTransferred = 0` (counter incremented by `claim()` when ARM is actually sent)
 7. **Net USDC proceeds transfer immediately to treasury** — `netProceeds = totalAllocatedUsdc` (USDC domain — computed directly from accepted USDC, not from `totalAllocatedArm * PRICE` which can diverge by rounding dust), transferred in the same transaction
 
@@ -598,7 +597,7 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 | No commitment withdrawals | Commitments are final once submitted | Eliminates gaming risk and simplifies contract; 3-week maximum lock period is known upfront |
 | ARM pre-load requirement | 1,800,000 ARM loaded before window opens | Ensures claim records written at finalization are always backed by sufficient ARM; enforced by contract flag |
 | Settlement model | Lazy settlement: aggregate finalization + per-user computation at claim time | `finalize()` writes only aggregate state (sale size, ceilings, hopDemand, totalAllocatedArm) — zero per-participant storage writes. `claim()` computes each participant's allocation on-the-fly from aggregate parameters + their own commitment records. Net proceeds push to treasury at finalization. ARM and refunds pull at claim time. |
-| Crowdfund finalization | Permissionless — callable by anyone after deadline + minimum raise met | No identified party triggers finalization. If deadline passes without minimum raise, `claimRefund()` derives eligibility from timestamp + state; no separate function or privileged action needed. |
+| Crowdfund finalization | Permissionless — callable by anyone after deadline | All post-deadline outcomes flow through `finalize()`. Sub-minimum demand results in `refundMode = true`. No separate deadline fallback path. Someone must call `finalize()` even in obvious failure cases (permissionless, low-cost). |
 | Crowdfund emergency cancel | Security Council (3-of-5 multisig), immediate effect, pre-finalization only | Speed serves participants in a genuine emergency. Abuse protection from Security Council composition, automatic unconditional refunds, and pre-finalization-only restriction — not a delay. |
 | Post-finalization | No privileged roles | All privileged functions permanently inactive after finalization. `withdrawUnallocatedArm` is permissionless — anyone calls it, ARM goes to immutable treasury address. |
 | Governance quiet period | 7 days after finalization; no proposals until day 8 | Gives community time to claim, delegate, and orient. Security Council handles any emergency during this window. Constructor parameter — applies once, no effect after expiry. |
@@ -620,8 +619,8 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 | `invite(invitee, fromHop)` | Inviter | Target address, inviter's hop | ARM loaded; pre-deadline; not cancelled; not finalized; caller has available slots at `fromHop` | Records invite edge; creates a new participation slot for invitee at `fromHop + 1` (increases invitee's cap by `HOP_CAP[fromHop + 1]`); emits `Invited(caller, invitee, fromHop + 1, 0)`; decrements inviter's slot count at `fromHop` |
 | `commitWithInvite(inviter, fromHop, nonce, deadline, signature, amount)` | Invitee | Inviter address, inviter's hop, nonce, deadline, EIP-712 signature, USDC amount | Valid EIP-712 + EIP-1271 signature; `nonce > 0`; `amount > 0`; `block.timestamp ≤ deadline`; nonce not used/revoked; inviter has available slots at `fromHop`; ARM loaded; pre-deadline; not cancelled; not finalized; USDC approved | Records invite edge + commitment atomically; creates a new participation slot for invitee at `fromHop + 1`; transfers USDC to escrow; emits `Invited(inviter, caller, fromHop + 1, nonce)` + `Committed(caller, fromHop + 1, amount)`; consumes nonce; decrements inviter's slot count |
 | `revokeInviteNonce(nonce)` | Inviter | Nonce to revoke | `nonce > 0`; nonce not already consumed or revoked | Marks nonce permanently revoked; emits `InviteNonceRevoked` |
-| `finalize()` | Anyone | — | Post-deadline; not finalized; not cancelled; `capped_demand ≥ MINIMUM_RAISE` | Iterates all participants once to compute `hopDemand[]`. Writes aggregate state only: `finalized`, `finalizationTimestamp`, `saleSize`, `ceilings[]`, `hopDemand[]`, `totalAllocatedArm`, `totalArmTransferred = 0`. Transfers net proceeds to treasury. Emits `Finalized`. Zero per-participant storage writes. **`finalize()` may end in either success finalization or refundMode finalization** — the `capped_demand` precondition gates entry, but post-waterfall `totalAllocatedUsdc` may fall below `MINIMUM_RAISE` at base size (see §Finalization step 5). **RefundMode branch:** if `totalAllocatedUsdc < MINIMUM_RAISE`, sets both `finalized = true` and `refundMode = true`; no treasury transfer; no aggregate recording beyond flags; emits `Finalized(refundMode=true)`. |
-| `claimRefund()` | Participant | — | `refundMode == true` OR (`post-deadline AND !finalized AND capped_demand < MINIMUM_RAISE`) OR `cancelled == true`; refund not already claimed | Transfers refund USDC to caller; emits `RefundClaimed` |
+| `finalize()` | Anyone | — | Post-deadline; not finalized; not cancelled | Iterates all participants once to compute `hopDemand[]`. Writes aggregate state only: `finalized`, `finalizationTimestamp`, `saleSize`, `ceilings[]`, `hopDemand[]`, `totalAllocatedArm`, `totalArmTransferred = 0`. If `totalAllocatedUsdc >= MINIMUM_RAISE`: transfers net proceeds to treasury, emits `Finalized(refundMode=false)`. If `totalAllocatedUsdc < MINIMUM_RAISE`: sets `refundMode = true`, no treasury transfer, emits `Finalized(refundMode=true)`. Zero per-participant storage writes. |
+| `claimRefund()` | Participant | — | `refundMode == true` OR `cancelled == true`; refund not already claimed | Transfers refund USDC to caller; emits `RefundClaimed` |
 | `claim(delegate)` | Participant | Delegate address | `finalized == true`; `refundMode == false`; not already claimed | Computes allocation on-the-fly via `computeAllocation(msg.sender)`. Sets `claimed[msg.sender] = true`. If within 3-year window: transfers ARM, calls `delegateOnBehalf`, increments `totalArmTransferred`. Always transfers refund USDC if any. Emits `Allocated(participant, armTransferred, refundUsdc, delegate)` + `AllocatedHop` per hop. `nonReentrant`. |
 | `computeAllocation(address)` | Anyone (view) | Participant address | `finalized == true`; `refundMode == false` | Pure view function — returns `(armAmount, refundUsdc)` for the given address. Canonical computation: same logic as `claim()` minus side effects. Required for UI display of allocations before claiming. |
 | `cancel()` | Security Council | — | Not finalized | Sets `cancelled` permanently; emits `Cancelled` |
@@ -708,15 +707,15 @@ The following pseudocode is the **specification-intent** description of the allo
 - An address may commit at multiple hop levels and receives ARM allocation from each independently.
 - Per-address cap at any hop = `participation_slots[(address, hop)] × HOP_CAP[hop]`. Slot sources: hop-0 from `SeedAdded`; hop-1/hop-2 from `Invited` events.
 - `loadArm()` has been called; contract holds ≥ `MAX_SALE` ARM.
-- The commitment deadline has passed and `capped_demand >= MINIMUM_RAISE`.
-- After computing allocations, if `net_proceeds < MINIMUM_RAISE`, the contract sets both `finalized = true` and `refundMode = true` without reverting — `finalized = true` permanently disables `finalize()` and `cancel()`; `claimRefund()` activates via the `refundMode` condition. This can occur at base size when hop-0 is oversubscribed and combined later-hop demand doesn't close the gap to $1M. Cannot occur after expansion.
+- The commitment deadline has passed.
+- After computing allocations, if `totalAllocatedUsdc < MINIMUM_RAISE`, the contract sets both `finalized = true` and `refundMode = true` without reverting — `finalized = true` permanently disables `finalize()` and `cancel()`; `claimRefund()` activates via the `refundMode` condition. This handles both sub-minimum `capped_demand` and the base-size post-waterfall shortfall case.
 
 ```python
 # Constants
 TOTAL_SUPPLY      = 12_000_000
 BASE_SALE         = 1_200_000       # ARM (= USDC at $1/ARM)
 MAX_SALE          = 1_800_000       # ARM
-MINIMUM_RAISE     = 1_000_000       # USDC — checked against both capped_demand and net_proceeds
+MINIMUM_RAISE     = 1_000_000       # USDC — checked against totalAllocatedUsdc post-allocation
 EXPANSION_TRIGGER = 1_500_000       # USDC capped demand threshold
 PRICE             = 1               # Specification uses whole-unit amounts for clarity.
 # Integer implementation: 1 whole ARM = 1e18 ARM units; 1 USDC = 1e6 USDC units.
