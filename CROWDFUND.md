@@ -58,7 +58,7 @@ The Knowable Safe appears in the beneficiary list like any other team member, wi
 **Constraints:**
 - Cannot change the revenue-lock schedule
 - Cannot pull from treasury or other allocations
-- Knowable Safe distributions inherit the same unlock terms
+- Knowable Safe's own ARM release follows the same revenue-lock milestone schedule. Future contributor distributions from the Safe are off-chain standard transfers after release and global transfer unlock — they are not on-chain revenue-lock-enforced. See REVENUE_LOCK.md §4.
 
 ### Revenue-Gated Unlocks (Team + Airdrop)
 
