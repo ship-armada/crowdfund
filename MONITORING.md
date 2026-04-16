@@ -38,7 +38,7 @@ This spec is complementary to:
 1. **Event-first.** State must be derivable from contract events, matching the observer model. Monitoring must not depend on frontend-local state unavailable to operators.
 2. **Thresholds must map to action.** Alerts without a corresponding procedure in `OPERATIONS.md` should not exist.
 3. **Distinguish normal-but-sensitive from abnormal.** `refundMode` is a defined crowdfund outcome, not a security exploit. Duplicate same-hop invites are an explicit design feature, not misuse. Alert text must reflect this.
-4. **Derived metrics must match the canonical mechanism.** In particular: slot-based participation (`participation_slots × HOP_CAP[hop]`), duplicate same-hop invites, lazy settlement (aggregate finalization + per-user claim-time computation), and the `AllocatedHop` / `Allocated` event model (emitted at `claim()` time, not at `finalize()` time) must be treated as intentional.
+4. **Derived metrics must match the canonical mechanism.** In particular: slot-based participation (`participation_slots × HOP_CAP[hop]`), duplicate same-hop invites, phased settlement, and the `AllocatedHop` / `Allocated` settlement model must be treated as intentional.
 5. **No monitoring state is authoritative over contract state.** When monitoring and contract state diverge, contract state wins. RPC/indexer issues are a monitoring failure, not a contract failure.
 
 ---
@@ -47,10 +47,10 @@ This spec is complementary to:
 
 | Level | Name | Response time | Examples |
 |---|---|---|---|
-| P0 | **Immediate** | < 1 hour | `Cancelled`; proceeds mismatch; unexpected events after refundMode; `finalize()` revert |
+| P0 | **Immediate** | < 1 hour | `Cancelled`; settlement stalled; proceeds mismatch; unexpected settlement events after refundMode |
 | P1 | **Same day** | < 8 hours | `refundMode` triggered; contract armed but not open past expected time; deadline passed without finalization |
 | P2 | **Attention required** | Next working window | Unusual duplicate-slot growth; seed/budget nearing exhaustion; demand thresholds; claim lag |
-| P3 | **Informational** | No action required | `ArmLoaded`; first `SeedAdded`; successful finalization; individual `Allocated` events (claim-time) |
+| P3 | **Informational** | No action required | `ArmLoaded`; first `SeedAdded`; `SettlementComplete`; successful finalization |
 
 ---
 
@@ -65,13 +65,13 @@ Monitoring must consume the following events. No monitoring logic may assume sta
 | `Invited` | `address inviter, address invitee, uint8 hop, uint256 nonce` |
 | `Committed` | `address participant, uint8 hop, uint256 amount` |
 | `InviteNonceRevoked` | `address inviter, uint256 nonce` |
-| `Finalized` | `uint256 saleSize, uint256 totalAllocatedArm, uint256 netProceeds, bool refundMode` |
-| `Allocated` | `address indexed participant, uint256 armTransferred, uint256 refundUsdc, address delegate` |
-| `AllocatedHop` | `address indexed participant, uint8 indexed hop, uint256 acceptedUsdc` |
+| `Finalized` | `uint256 saleSize, uint256 allocatedArm, uint256 netProceeds, bool refundMode` |
+| `Allocated` | `address indexed participant, uint256 totalArmAmount, uint256 totalRefundAmount` |
+| `AllocatedHop` | `address indexed participant, uint8 indexed hop, uint256 armAmount` |
+| `SettlementComplete` | — |
+| `ArmClaimed` | `address participant, uint256 armAmount, address delegate` |
 | `RefundClaimed` | `address participant, uint256 usdcAmount` |
 | `Cancelled` | — |
-
-**Note:** `Allocated` and `AllocatedHop` are emitted at `claim()` time (one set per claiming participant), not at `finalize()` time. `armTransferred` is actual ARM sent (0 if claimed after 3-year expiry). Pre-claim theoretical allocations require the `computeAllocation(address)` view function — they cannot be derived from events alone.
 
 Any monitoring that requires additional contract state reads (e.g. `finalized`, `refundMode`, `cancelled` flags; balance reads for treasury verification) must document those reads explicitly.
 
@@ -87,10 +87,10 @@ Monitoring derives the current lifecycle phase from events and timestamps.
 | **ARMED / PRE-OPEN** | `ArmLoaded` emitted; `now < openTimestamp` |
 | **OPEN / WEEK 1** | `ArmLoaded`; `openTimestamp ≤ now ≤ week1Deadline` |
 | **OPEN / WEEKS 2–3** | `ArmLoaded`; `week1Deadline < now ≤ commitmentDeadline` |
-| **DEADLINE PASSED / QUALIFIED / NOT FINALIZED** | `now > commitmentDeadline`; derived `capped_demand ≥ MINIMUM_RAISE`; no `Finalized`; no `Cancelled` |
-| **DEADLINE PASSED / NOT FINALIZED** | `now > commitmentDeadline`; no `Finalized`; no `Cancelled`. Call `finalize()` — it determines success or refundMode. |
-| **FINALIZED / SUCCESS / CLAIMS OPEN** | `Finalized(refundMode=false)` emitted; `Allocated` events arrive incrementally as participants call `claim()`. Theoretical allocations available via `computeAllocation(address)` view function immediately after `Finalized`. |
-| **FINALIZED / SUCCESS / CLAIMS EXPIRED** | `Finalized(refundMode=false)` emitted; `block.timestamp > finalizationTimestamp + 3 years`. Late claimants via `claim()` receive refund USDC only — ARM portion forfeited. `withdrawUnallocatedArm()` now sweeps `1,800,000 - totalArmTransferred`. |
+| **DEADLINE PASSED / NOT FINALIZED** | `now > commitmentDeadline`; no `Finalized`; no `Cancelled` |
+| **FINALIZED / SUCCESS / SINGLE-TX** | `Finalized(refundMode=false)`; `Allocated` + `AllocatedHop` emitted in the same transaction as `Finalized`. `SettlementComplete` is **never emitted** in single-tx mode — its presence is only relevant in phased mode. A monitoring system should not wait for `SettlementComplete` after detecting single-tx settlement. |
+| **FINALIZED / SUCCESS / PHASED IN PROGRESS** | `Finalized(refundMode=false)`; `Allocated` events absent from the same transaction; `SettlementComplete` not yet seen |
+| **FINALIZED / SUCCESS / SETTLEMENT COMPLETE** | `SettlementComplete` seen |
 | **FINALIZED / REFUND MODE** | `Finalized(refundMode=true)` |
 | **CANCELLED** | `Cancelled` emitted |
 
@@ -137,17 +137,17 @@ This is **intentional design behavior** under the `participation_slots[(address,
 
 Post-finalization, track:
 
-- Aggregate state written correctly: `saleSize`, `ceilings[]`, `hopDemand[]`, `totalAllocatedArm`, `totalArmTransferred`
-- `computeAllocation(address)` spot-check for sample addresses (compare against manual calculation)
-- Treasury USDC balance increase matches `netProceeds` from `Finalized` event
+- Count of `Allocated` events emitted vs **expected participant count** (defined as: count of unique addresses with at least one `Committed` event — every such address receives an `Allocated` event on the success path, including zero-ARM / full-refund addresses)
+- Count of `AllocatedHop` events emitted
+- Settlement invariant check for sampled addresses: `sum(AllocatedHop.armAmount) == Allocated.totalArmAmount`
+- `SettlementComplete` seen / not seen (phased mode only)
+- Time elapsed since `Finalized` without `SettlementComplete` (phased mode)
 
 ### 7.5 Claims metrics
 
-- ARM claimed: count of `Allocated` events (emitted at `claim()` time) and sum of `armTransferred` vs `totalAllocatedArm`
-- `totalArmTransferred` counter (on-chain) — should equal sum of `Allocated.armTransferred` across all claims
-- Refunds claimed: `RefundClaimed` count (refundMode/cancel paths) + refund portions from `Allocated` events (success path)
+- ARM claimed: `ArmClaimed` count and total ARM vs `Finalized.allocatedArm`
+- Refunds claimed: `RefundClaimed` count and total USDC vs expected total refundable
 - Participation rates as percentages over time
-- Post-3yr-expiry: monitor for late `claim()` calls where `armTransferred == 0` (refund-only, ARM forfeited)
 
 ---
 
@@ -204,7 +204,7 @@ Post-finalization, track:
 
 | Field | Value |
 |---|---|
-| **Signal** | COUNT of ROOT-issued `Invited` events, by `hop` field (where `hop` in the `Invited` event is the invitee's hop level — not the `fromHop` parameter used when calling `launchTeamInvite`) |
+| **Signal** | COUNT of ROOT-issued `Invited` events, filtered by `hop` field (where `hop` in the `Invited` event is the invitee's hop level, not `fromHop` — so `hop == 1` counts hop-1 placements and `hop == 2` counts hop-2 placements) |
 | **Condition** | Hop-1 or hop-2 placement count reaches 80%, 90%, 100% of budget (60 each) |
 | **Severity** | P2 at 80%/90%; P1 at 100% |
 | **Meaning** | Week-1 discretionary placement capacity running low |
@@ -261,15 +261,15 @@ Post-finalization, track:
 
 ---
 
-### A9b — Deadline passed, sub-minimum demand
+### A9b — Deadline passed, refunds auto-available
 
 | Field | Value |
 |---|---|
 | **Signal** | Absence of `Finalized` and `Cancelled` |
 | **Condition** | `now > commitmentDeadline` AND derived `capped_demand < MINIMUM_RAISE` |
 | **Severity** | P1 |
-| **Meaning** | Sale will not qualify. Call `finalize()` — it will set `refundMode = true`, enabling refunds and ARM recovery. Announce to participants immediately. |
-| **Runbook** | `OPERATIONS.md` §5 pre-finalization checkpoint |
+| **Meaning** | Sale did not qualify. `claimRefund()` eligibility activates automatically — do **not** call `finalize()`. Announce to participants immediately. |
+| **Runbook** | `OPERATIONS.md` §5 pre-finalization checkpoint (capped_demand < MINIMUM_RAISE branch) |
 
 ---
 
@@ -306,37 +306,37 @@ Post-finalization, track:
 
 ---
 
-### A13 — Claims available (finalization success)
+### A13 — Phased settlement started
 
 | Field | Value |
 |---|---|
-| **Signal** | `Finalized(refundMode=false)` emitted |
+| **Signal** | `Finalized(refundMode=false)` without `Allocated` events in the same transaction |
+| **Severity** | P2 |
+| **Meaning** | Settlement is valid but event emission is incomplete. Operators must call `emitSettlement()`. |
+| **Runbook** | `OPERATIONS.md` §6 Path B (phased finalization) |
+
+---
+
+### A14 — Phased settlement stalled
+
+| Field | Value |
+|---|---|
+| **Signal** | `Finalized(refundMode=false)` seen; `SettlementComplete` not yet seen |
+| **Condition** | Time elapsed since `Finalized` exceeds configured threshold (e.g. 4 hours) |
+| **Severity** | P0 |
+| **Meaning** | Settlement event emission is incomplete too long after finalization. Participants cannot see allocations. |
+| **Runbook** | `OPERATIONS.md` §6 Path B; §9.6 |
+
+---
+
+### A15 — Settlement complete
+
+| Field | Value |
+|---|---|
+| **Signal** | `SettlementComplete` |
 | **Severity** | P3 |
-| **Meaning** | Finalization successful. Aggregate state written. Participants can now call `claim(delegate)` to receive ARM + refunds. Theoretical allocations immediately queryable via `computeAllocation(address)`. |
-| **Runbook** | `OPERATIONS.md` §6 Step 3 (post-finalization verification) |
-
----
-
-### A14 — Claims expiry approaching
-
-| Field | Value |
-|---|---|
-| **Signal** | `block.timestamp` approaching `finalizationTimestamp + 3 years` |
-| **Condition** | Less than 30 days until 3-year claim deadline AND unclaimed ARM > 0 (i.e., `totalAllocatedArm - totalArmTransferred > 0`) |
-| **Severity** | P2 |
-| **Meaning** | Participants who haven't claimed will forfeit ARM after deadline (refund USDC remains claimable). Send reminders. |
-| **Runbook** | `OPERATIONS.md` §8 claims monitoring |
-
----
-
-### A15 — Claims expired — sweep eligible
-
-| Field | Value |
-|---|---|
-| **Signal** | `block.timestamp > finalizationTimestamp + 3 years` |
-| **Severity** | P2 |
-| **Meaning** | 3-year claim deadline passed. `withdrawUnallocatedArm()` now sweeps `1,800,000 - totalArmTransferred` (unsold + unclaimed + forfeited). Late `claim()` calls still transfer refund USDC but no ARM. |
-| **Runbook** | `OPERATIONS.md` §8 three-year deadline sweep |
+| **Meaning** | All `Allocated` and `AllocatedHop` events emitted in phased mode |
+| **Runbook** | `OPERATIONS.md` §6 Path B Step 3 |
 
 ---
 
@@ -352,14 +352,14 @@ Post-finalization, track:
 
 ---
 
-### A17 — Unexpected events after refundMode or cancel
+### A17 — Unexpected settlement events after refundMode or cancel
 
 | Field | Value |
 |---|---|
-| **Signal** | `Allocated` or `AllocatedHop` |
+| **Signal** | `Allocated`, `AllocatedHop`, or `SettlementComplete` |
 | **Condition** | Emitted after `Finalized(refundMode=true)` or after `Cancelled` |
 | **Severity** | P0 |
-| **Meaning** | Critical contract violation. `Allocated` and `AllocatedHop` should only be emitted by `claim()` on the success path. If they appear in refundMode or cancelled state, the contract has a bug. |
+| **Meaning** | Critical contract or event-surface violation. Should never occur. |
 | **Runbook** | Immediate investigation; treat as severe implementation bug |
 
 ---
@@ -368,8 +368,8 @@ Post-finalization, track:
 
 | Field | Value |
 |---|---|
-| **Signal** | `Allocated` event count (emitted at `claim()` time) vs total participant count |
-| **Condition** | <50% of participants have called `claim()` after 14 days post-finalization |
+| **Signal** | `ArmClaimed` count vs allocated participant count |
+| **Condition** | <50% of allocated participants claimed after 14 days post-finalization |
 | **Severity** | P2 |
 | **Meaning** | Participant awareness issue; not a contract failure |
 | **Runbook** | `OPERATIONS.md` §8 claims monitoring |
@@ -414,20 +414,19 @@ Alert A6 exists for operator **awareness**, not for automatic escalation or reme
 
 Alert A10 is P1 (not P0) because operators must shift participant guidance immediately, but there is no security threat. Alert text and participant communications must avoid exploit-like framing.
 
-### 9.3 Lazy settlement — no `Allocated` events until claims
+### 9.3 Phased settlement is valid
 
-Under lazy settlement, `Allocated` and `AllocatedHop` events are emitted at `claim()` time, not at `finalize()` time. After successful finalization, the expected event sequence is:
+Absence of `Allocated` / `AllocatedHop` events immediately after `Finalized(refundMode=false)` is not automatically a bug. The correct sequence is:
 
 1. Alert A12 fires (successful finalization — P3)
-2. Alert A13 fires (claims available — P3)
-3. `Allocated` events arrive incrementally as individual participants call `claim(delegate)`
-4. Theoretical allocations are queryable immediately via `computeAllocation(address)` — no need to wait for events
-
-The absence of `Allocated` events immediately after `Finalized` is **expected behavior**, not a stall.
+2. If `Allocated` events are absent from the same transaction as `Finalized`: Alert A13 fires (phased settlement started — P2)
+3. Operators begin calling `emitSettlement()` batches
+4. If `SettlementComplete` doesn't arrive within threshold: Alert A14 fires (stalled — P0)
+5. On `SettlementComplete`: Alert A15 fires (complete — P3)
 
 ### 9.4 Zero-allocation addresses on success path
 
-A participant may call `claim()` and receive an `Allocated` event with `armTransferred = 0` and a non-zero `refundUsdc`. This is valid — the address committed but received no ARM due to oversubscription, or claimed after the 3-year expiry. Monitoring must treat this as correct.
+A participant may receive an `Allocated` event with `totalArmAmount = 0` and a non-zero `totalRefundAmount`, while emitting no `AllocatedHop` event. This is valid — the address committed but received no ARM due to oversubscription. Monitoring must treat this as correct.
 
 ### 9.5 `capped_demand` calculation
 
@@ -445,7 +444,7 @@ Operators must have read access to the following views before and throughout the
 - `openTimestamp`, `week1Deadline`, `commitmentDeadline`
 - Finalization timestamp (if any)
 - `refundMode` / `cancelled` flags
-- Claims expiry status: time remaining to 3-year deadline
+- Phased settlement progress / complete status
 
 ### 10.2 Budget view
 
@@ -464,10 +463,10 @@ Operators must have read access to the following views before and throughout the
 ### 10.4 Settlement view
 
 - Finalized: success / refundMode / cancelled
-- Aggregate state: `totalAllocatedArm`, `totalArmTransferred`, `saleSize`
-- `Allocated` event count (claims processed) vs total participant count
-- `totalArmTransferred` / `totalAllocatedArm` ratio (claim progress)
-- Sweep eligibility: unsold ARM (immediate) and unclaimed ARM (post-3yr)
+- `Allocated` event count vs expected participant count
+- `AllocatedHop` event count
+- Settlement batch progress (phased mode: % complete, time since `Finalized`)
+- `SettlementComplete` seen / not seen
 
 ### 10.5 Claims view
 
@@ -513,13 +512,67 @@ Each alert must include:
 | A10 | §6 Path C (refundMode); §9.7 |
 | A11 | §7 Cancel procedure |
 | A12 | §6 post-finalization verification; §8 |
-| A13 | §6 Step 3 (claims available); §8 |
-| A14 | §8 Claims monitoring |
-| A15 | §8 3-year deadline sweep |
+| A13, A14, A15 | §6 Path B (phased finalization); §9.6 |
 | A16 | §8 Proceeds verification |
 | A17 | Immediate investigation — implementation bug |
 | A18, A19 | §8 Claims monitoring |
 | A20 | §8 3-year deadline sweep |
+
+---
+
+## 12a. RevenueLock Observation Sync Runbook
+
+**What:** Call `RevenueLock.syncObservedRevenue()` at least once per day.
+
+**Why:** RevenueLock's rate-limit defense against malicious RevenueCounter upgrades depends on regular observation. Because `lastSyncTimestamp` advances unconditionally on every call (not only when `maxObservedRevenue` increases), frequent syncs consume the elapsed-time allowance budget and keep the effective rate cap tight at `MAX_REVENUE_INCREASE_PER_DAY` per day. Without regular syncs, the allowance accumulates and the cap becomes meaningless over time.
+
+**Who:** Automated bot. Any address can call `syncObservedRevenue()` — no authorization required. Gas cost is modest (one SSTORE to `lastSyncTimestamp` on every call, plus event emission on actual advances).
+
+**Frequency:** At least daily. Hourly keeps the effective cap within ~0.04% of the hardcoded daily rate.
+
+**Off-chain monitoring:** Use `getCappedObservedRevenue()` view function to see what the ratchet would accept if sync were called right now, without spending gas or modifying state. Dashboards should display both `maxObservedRevenue` (current active value) and `getCappedObservedRevenue()` (what a sync would produce).
+
+**Alert conditions:**
+- Sync not called for > 48 hours (bot failure)
+- `ObservedRevenueUpdated` event with `newMax - oldMax` approaching `MAX_REVENUE_INCREASE_PER_DAY` (legitimate revenue burst or malicious RevenueCounter manipulation — investigate)
+- `reportedByCounter` in `ObservedRevenueUpdated` event materially exceeds `newMax` for a sustained period (RevenueCounter may be over-reporting and being rate-limited — investigate)
+- `getCappedObservedRevenue()` diverges significantly from `maxObservedRevenue` for a sustained period (sync bot may not be running, allowing allowance accumulation)
+
+---
+
+## 12b. Treasury Outflow Pending-State Runbook
+
+**What:** Monitor `OutflowLimitIncreaseScheduled`, `OutflowLimitActivated`, and `OutflowLimitDecreased` events emitted by `ArmadaTreasuryGov`.
+
+**Why:** Outflow parameter changes have a 24-day activation delay on loosening. This is the primary structural defense against governance capture of the treasury. Monitoring the pending state lets the community and Security Council observe a pending loosening during the 24-day window and respond before it takes effect.
+
+**Alert conditions:**
+- `OutflowLimitIncreaseScheduled` emitted — new loosening is pending, 24 days until activation. This is the window for community review and SC veto of the originating proposal.
+- `OutflowLimitActivated` emitted — pending change took effect. Confirm this matches expected governance activity.
+- New `OutflowLimitIncreaseScheduled` while a previous pending increase is unexpired — governance changed its mind or unusual activity. Investigate.
+- Multiple Scheduled/Activated cycles in rapid succession — signal of unusual governance activity.
+
+**Optional operational task:** Call `activatePendingLimit(address token)` on `ArmadaTreasuryGov` shortly after `pendingActivation` timestamp to trigger the `OutflowLimitActivated` event at the correct time rather than waiting for the next outflow operation. Not security-critical but improves monitoring timeliness.
+
+---
+
+## 12c. Bootstrap Holder Balance Monitor
+
+**What:** Alert if ARM balance of the deployment multisig (bootstrap holder) becomes non-zero at any point after the distribution transaction completes.
+
+**Why:** The bootstrap holder's ARM whitelist entry persists permanently (add-only whitelist, no removal path). The post-distribution security property is that the entry is inert while the balance is zero. Any non-zero balance re-activates the whitelist entry, allowing the bootstrap holder to transfer ARM while global transfers are restricted. See ARM_TOKEN.md §3 for the full security framing.
+
+**Signal:** `Transfer` event on the ARM token where `to == bootstrapHolderAddress` and `value > 0`, at any time after the distribution transaction block.
+
+**Alert condition:** `ARM.balanceOf(bootstrapHolder) > 0` at any time post-distribution.
+
+**Severity:** P0.
+
+**Response:** Investigate the source of the incoming transfer immediately.
+- If accidental (wrong address in a governance proposal or script): coordinate with governance to recover or redirect the misplaced ARM.
+- If intentional: treat as a potential exfiltration vector. SC cannot directly reverse the transfer, but can pause or veto any follow-on governance actions that would depend on the bootstrap holder's re-activated whitelist status.
+
+**Configuration:** The bootstrap holder address must be recorded in deployment records (OPERATIONS.md §11 Deployment Record) and referenced here. Alert fires on any positive-balance `Transfer` to that address.
 
 ---
 
@@ -531,8 +584,8 @@ The following thresholds are marked `[TBD]` and must be set before monitoring is
 |---|---|---|
 | A6 | Duplicate-slot watch threshold | `[TBD]` — start at 10% of occupied hop-1/2 nodes |
 | A9a | Grace window after deadline before P0 escalation | `[TBD]` — 2 hours suggested |
-| A14 | Claims expiry warning window | 30 days before 3-year deadline |
-| A18 | ARM claim participation floor | 50% of participants after 14 days |
+| A14 | Stall threshold for phased settlement | `[TBD]` — 4 hours suggested |
+| A18 | ARM claim participation floor | 50% of allocated participants after 14 days |
 | A19 | Refund claim lag threshold | >10% unclaimed after 30 days |
 
 ---
@@ -543,9 +596,9 @@ This monitoring spec is implementation-ready when:
 
 - Every alert rule maps to a real signal from the canonical event surface or an explicit contract state read
 - Every P0/P1 alert maps to a concrete section of `OPERATIONS.md`
-- Lazy settlement event model is reflected: `Allocated`/`AllocatedHop` emitted at `claim()` time, not at `finalize()` time
+- Phased settlement is handled without ambiguity (A13/A14/A15 sequence)
 - Duplicate same-hop slot growth is explicitly treated as valid-but-watchworthy (A6)
-- `refundMode`, cancel, post-expiry claim behavior, and 3-year sweep windows are all covered
+- `refundMode`, cancel, and 3-year sweep windows are all covered
 - No alert assumes frontend-local state unavailable to operators
 - All `[TBD]` thresholds in §13 have been resolved
 - `OPERATIONS.md` section references are verified against final headings
