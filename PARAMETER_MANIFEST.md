@@ -126,21 +126,20 @@ These values are defined in GOVERNANCE.md and affect the ARM token / governor co
 | Claim deadline | 3 years (94,608,000 seconds) | CROWDFUND.md §Finalization | Fixed term — but the crowdfund contract derives this from `finalizationTimestamp`, not a constructor arg |
 | Proposal threshold | 12,000 ARM | GOVERNANCE.md | |
 | Quorum | max(20% circulating, 100,000 ARM) | GOVERNANCE.md | |
+| `LIMIT_ACTIVATION_DELAY` | 24 days (2,073,600 seconds) | GOVERNANCE.md §Treasury Outflow Limits | Hardcoded constant in `ArmadaTreasuryGov`. Not governance-settable. Constrained by `_maxExtendedCycle() < LIMIT_ACTIVATION_DELAY` — governor timing setters revert if they would violate this invariant. |
 
 ---
 
-## 9. Lazy Settlement Gas Benchmarks
+## 9. Settlement Mode
 
 | Parameter | Value | Verified | Notes |
 |---|---|---|---|
-| `finalize()` gas estimate | `[TBD]` gas | ☐ | From IMPLEMENTATION_TEST.md S16 fixture. Expected 3-5M under lazy settlement (aggregate-only). |
-| `claim()` gas estimate | `[TBD]` gas | ☐ | Per-participant. Expected ~200k. |
-| `computeAllocation()` gas (view) | `[TBD]` gas | ☐ | Should be negligible (no state writes). |
+| Settlement mode | `[TBD: single-tx / phased]` | ☐ | Determined during development and gas testing. Recorded here before deployment. |
+| Gas estimate at max network | `[TBD]` gas | ☐ | From IMPLEMENTATION_TEST.md S16 fixture |
 | Block gas limit target | 30,000,000 | — | Current mainnet limit |
-| Participant enumeration confirmed | ☐ | ☐ | Contract maintains enumerable participant set (e.g. `address[]` populated by `commit()`). Required for `finalize()` to iterate and compute `hopDemand[]`. |
-| Slot-count model confirmed | ☐ | ☐ | `slotCount[address][hop]` is a counter that increments per invite, not a boolean. Required for cap scaling and `computeAllocation()` correctness. |
 
-**Lazy settlement architecture:** `finalize()` writes only aggregate state (zero per-participant storage writes). `claim()` computes per-participant allocation on-the-fly via `computeAllocation()`. No `emitSettlement()`, no settlement mode selection, no batched event emission.
+**If single-tx:** `finalize()` emits `Finalized` + `Allocated` + `AllocatedHop` in one transaction. `emitSettlement()` reverts.
+**If phased:** `finalize()` emits only `Finalized`. `emitSettlement()` emits settlement events in monotonic batches. Final batch emits `SettlementComplete`.
 
 ---
 
@@ -170,7 +169,7 @@ Fill after deployment. This section is the permanent record.
 | ARM balance verified (1,800,000e18) | ☐ |
 | Observer confirmed operational | ☐ |
 | Committer confirmed operational | ☐ |
-| `finalize()` gas benchmark completed | ☐ |
+| Settlement mode confirmed | `[single-tx / phased]` |
 
 ---
 
@@ -222,8 +221,7 @@ Before deployment, every row must be verified. This is the final sign-off.
 | All decimal-encoded values independently computed and verified | ☐ | |
 | EIP-712 domain fields confirmed | ☐ | |
 | Token decimals verified on-chain | ☐ | |
-| Gas benchmarks completed (`finalize()`, `claim()`, `computeAllocation()`) | ☐ | |
-| Slot-count model confirmed in contract code | ☐ | |
+| Settlement mode confirmed from gas testing | ☐ | |
 | OPERATIONS.md §2 checklist matches this manifest exactly | ☐ | |
 | MONITORING.md alert thresholds reference these values | ☐ | |
 | Two independent reviewers have signed off on all values | ☐ | |
