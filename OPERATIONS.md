@@ -17,7 +17,7 @@ Complete this table before deployment. Every address must be confirmed before an
 
 | Role | Description | Address | Wallet type | Quorum |
 |---|---|---|---|---|
-| Deployer | Deploys the contract | `[TBD]` | EOA or multisig | — |
+| Deployer | Deploys the contract | `[TBD]` | Multisig required (not EOA) | — |
 | Treasury | Receives net USDC proceeds + unsold/unclaimed ARM | `[TBD]` | Multisig | `[TBD]` |
 | ROOT / Launch team | `addSeed()`, `launchTeamInvite()` | `[TBD]` | Multisig | `[TBD]` |
 | Security Council | `cancel()` authority | `[TBD]` | 3-of-5 multisig | 3-of-5 |
