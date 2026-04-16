@@ -12,10 +12,13 @@ A single shared contract that holds all team and airdrop ARM (2,400,000 total) a
 
 ```
 RevenueCounter (UUPS proxy, governance-upgradeable)
-  └── recognizedRevenueUsd() → uint256 (monotonic)
+  └── recognizedRevenueUsd() → uint256
 
 RevenueLock (immutable, non-upgradeable)
-  ├── reads: RevenueCounter.recognizedRevenueUsd()
+  ├── reads: RevenueCounter.recognizedRevenueUsd() — via ratchet only
+  ├── stores: maxObservedRevenue (monotonic, rate-limited)
+  ├── stores: lastSyncTimestamp (advances unconditionally on every sync)
+  ├── immutable: MAX_REVENUE_INCREASE_PER_DAY
   ├── holds: 2,400,000 ARM (team + airdrop)
   ├── tracks: per-beneficiary allocations and released amounts
   └── releases: ARM to beneficiary wallet + delegates atomically via delegateOnBehalf()
@@ -24,6 +27,8 @@ ARM Token
   ├── whitelist includes RevenueLock address (constructor-set)
   └── delegateOnBehalf() callable by RevenueLock (constructor-set)
 ```
+
+RevenueLock never reads `RevenueCounter.recognizedRevenueUsd()` directly for entitlement calculations. All reads go through `_updateMaxObservedRevenue()`, which enforces the monotonic ratchet and rate cap before updating `maxObservedRevenue`. Entitlement is always computed from `maxObservedRevenue`, not the raw counter value.
 
 ---
 
@@ -37,19 +42,19 @@ ARM Token
 | RevenueCounter address | Immutable | UUPS proxy address — implementation may be upgraded by governance, but the proxy address never changes |
 | Beneficiary list | Immutable | Array of `(address beneficiary, uint256 allocationAmount)` pairs. Set once at deployment. |
 | Milestone table | Immutable | The revenue-to-unlock-percentage mapping. Hardcoded or constructor-set. Cannot be changed after deployment. |
+| `MAX_REVENUE_INCREASE_PER_DAY` | Immutable | Maximum rate at which `maxObservedRevenue` can advance per elapsed day. Set at deployment; not governance-settable. See PARAMETER_MANIFEST.md. |
+
+Constructor must initialize: `maxObservedRevenue = 0`, `lastSyncTimestamp = block.timestamp`. The sync timestamp **must not** be left as 0 — a zero timestamp would allow the first call to accumulate the entire elapsed-time allowance since the Unix epoch and bypass the rate limit entirely.
 
 ### Post-deployment setup
 
-1. ARM token constructor mints 2,400,000 ARM directly to this contract's address (no intermediate deployer step)
-2. Verify `ARM.balanceOf(revenueLockContract) == 2_400_000e18`
+ARM is distributed to this contract as part of the bootstrap-holder distribution sequence (see ARM_TOKEN.md §3). After distribution: `ARM.balanceOf(revenueLockContract) == 2_400_000e18`.
 
 ### Deployment order
 
-There are circular dependencies across the contract set. The ARM token constructor needs immutable references to: revenue-lock (whitelist + `delegateOnBehalf`), crowdfund (whitelist + `delegateOnBehalf`), treasury (whitelist + delegation revert), governor executor / timelock (`setTransferable` caller), and wind-down contract (`setTransferable` caller). The revenue-lock constructor needs the ARM token address and the RevenueCounter address. The governor/timelock may need the ARM token address for voting power reads.
+There are circular dependencies across the contract set. The ARM token constructor needs immutable references to: revenue-lock (whitelist + `delegateOnBehalf`), crowdfund (whitelist + `delegateOnBehalf`), treasury (whitelist + delegation revert), governor executor / timelock (`setTransferable` caller), wind-down contract (`setTransferable` caller), and bootstrap holder (whitelist). The revenue-lock constructor needs the ARM token address and the RevenueCounter address.
 
 **Recommended: CREATE2 precomputed addresses.** Compute all contract addresses before deploying any of them. The full set that may need precomputation: ARM token, RevenueLock, RevenueCounter proxy, Governor/Timelock, WindDown contract, and CrowdfundContract. Deploy in any order — all constructors use the precomputed addresses.
-
-This avoids initialization functions and keeps all immutable contracts fully configured from deployment. Ian should confirm the exact dependency graph and CREATE2 approach during implementation.
 
 ---
 
@@ -103,8 +108,8 @@ The only state-changing function a beneficiary calls.
 - `delegatee != address(0)`
 
 **Logic:**
-1. Read `RevenueCounter.recognizedRevenueUsd()`
-2. Look up the unlock percentage from the milestone table (step function)
+1. Call `_updateMaxObservedRevenue()` — advances `maxObservedRevenue` and `lastSyncTimestamp` before any entitlement calculation
+2. Look up the unlock percentage from the milestone table (step function, using `maxObservedRevenue`)
 3. Compute entitled amount: `unlockPercentage × allocation[msg.sender]`
 4. Compute releasable amount: `entitled - alreadyReleased[msg.sender]`
 5. If releasable == 0: revert (nothing new to release)
@@ -112,17 +117,39 @@ The only state-changing function a beneficiary calls.
 7. Call `ARM.transfer(msg.sender, releasable)` — succeeds because this contract is whitelisted
 8. Call `ARM.delegateOnBehalf(msg.sender, delegatee)` — succeeds because this contract is an authorized caller
 
+**Step 1 detail — `_updateMaxObservedRevenue()`:**
+```
+reported = RevenueCounter.recognizedRevenueUsd()
+elapsed = block.timestamp - lastSyncTimestamp
+maxAllowedIncrease = (elapsed * MAX_REVENUE_INCREASE_PER_DAY) / 1 days
+capped = min(reported, maxObservedRevenue + maxAllowedIncrease)
+if capped > maxObservedRevenue:
+    emit ObservedRevenueUpdated(maxObservedRevenue, capped, reported)
+    maxObservedRevenue = capped
+lastSyncTimestamp = block.timestamp  // unconditional — always advances
+```
+
+`lastSyncTimestamp` advances on every call regardless of whether `maxObservedRevenue` changed. This is the mechanism that makes regular syncs meaningful — each sync consumes the elapsed-time allowance budget.
+
+### `syncObservedRevenue()`
+
+Permissionless. Calls `_updateMaxObservedRevenue()` without releasing ARM. Any address can call this. Intended for monitoring bots that keep the ratchet current without requiring a beneficiary to claim.
+
 **Events:**
 ```
 Released(address indexed beneficiary, uint256 amount, address delegatee, uint256 cumulativeReleased)
+ObservedRevenueUpdated(uint256 oldMax, uint256 newMax, uint256 reportedByCounter)
 ```
+
+`ObservedRevenueUpdated` is emitted on every actual ratchet advance (when `maxObservedRevenue` increases), by both `release()` and `syncObservedRevenue()`.
 
 **Properties:**
 - **Pull-based.** Beneficiaries call `release()` when they want. There is no push mechanism. ARM sits in the contract until claimed.
 - **Atomic transfer + delegation.** Released ARM enters circulation already delegated, matching the crowdfund `claim(delegate)` pattern. No ARM enters circulation undelegated.
-- **Delegation applies to full balance.** Step 8 calls `delegateOnBehalf(msg.sender, delegatee)`, which sets the beneficiary's entire ARM delegation — not just the newly released tokens. This matches standard ERC20Votes behavior (one delegatee per address). If the beneficiary previously delegated to Alice and now specifies Bob, all their ARM (including previously released tokens) delegates to Bob.
+- **Ratchet-first.** Entitlement is always computed from `maxObservedRevenue`, never from a direct read of `RevenueCounter.recognizedRevenueUsd()`. This makes the contract immune to RevenueCounter rewind attacks.
+- **Rate-limited.** `maxObservedRevenue` can only advance at `MAX_REVENUE_INCREASE_PER_DAY` per elapsed day since last sync. Acceleration requires real elapsed time.
+- **Delegation applies to full balance.** Step 8 calls `delegateOnBehalf(msg.sender, delegatee)`, which sets the beneficiary's entire ARM delegation — not just the newly released tokens. This matches standard ERC20Votes behavior (one delegatee per address).
 - **Idempotent.** Calling `release()` when nothing new is unlocked reverts harmlessly. Calling it multiple times between milestones is safe — `alreadyReleased` tracks cumulative releases.
-- **Delegatee can be changed.** Each `release()` call sets delegation to the provided `delegatee`. A beneficiary can also change their delegatee at any time by calling `ARM.delegate()` directly on their wallet — no need to wait for the next milestone.
 
 ---
 
@@ -132,9 +159,12 @@ Released(address indexed beneficiary, uint256 amount, address delegatee, uint256
 |---|---|---|
 | `allocation(address beneficiary)` | uint256 | Total allocation for this beneficiary |
 | `released(address beneficiary)` | uint256 | Total ARM already released to this beneficiary |
-| `releasable(address beneficiary)` | uint256 | ARM currently available to release (entitled - released) |
-| `unlockPercentage()` | uint256 (bps) | Current unlock percentage based on revenue counter |
-| `currentRevenue()` | uint256 | Current `recognizedRevenueUsd` from the counter |
+| `releasable(address beneficiary)` | uint256 | ARM currently available to release, computed from `maxObservedRevenue` |
+| `unlockPercentage()` | uint256 (bps) | Current unlock percentage based on `maxObservedRevenue` (not raw counter) |
+| `currentRevenue()` | uint256 | Current value of `maxObservedRevenue` (the ratcheted, rate-limited observation — not `RevenueCounter.recognizedRevenueUsd()` directly) |
+| `getCappedObservedRevenue()` | uint256 | What `maxObservedRevenue` would become if `syncObservedRevenue()` were called right now. Read-only: does not modify state or advance `lastSyncTimestamp`. Use for monitoring dashboards. |
+| `maxObservedRevenue` | uint256 | Current active ratchet value. Monotonically non-decreasing. |
+| `lastSyncTimestamp` | uint256 | Timestamp of last `_updateMaxObservedRevenue()` call. Advances unconditionally. |
 | `beneficiaryCount()` | uint256 | Number of beneficiaries |
 
 ---
@@ -164,7 +194,10 @@ Released(address indexed beneficiary, uint256 amount, address delegatee, uint256
 | **Unreleased ARM is vote-inert** | This contract has no `delegate()` call path for its own balance. ARM sitting here has zero voting power. |
 | **Released ARM is always delegated** | Every `release()` call atomically delegates via `delegateOnBehalf()`. No ARM enters circulation undelegated. |
 | **No over-release** | `alreadyReleased[beneficiary] <= allocation[beneficiary]` at all times |
-| **Revenue counter is monotonic** | The counter can only increase. A decrease would require a bug in the RevenueCounter contract (separate audit scope). |
+| **`maxObservedRevenue` is monotonic** | `maxObservedRevenue` never decreases. RevenueCounter downgrades are invisible to this contract. |
+| **`maxObservedRevenue` is rate-limited** | `maxObservedRevenue` can increase by at most `MAX_REVENUE_INCREASE_PER_DAY × elapsed_days` per call to `_updateMaxObservedRevenue()`. |
+| **`lastSyncTimestamp` advances unconditionally** | Every call to `_updateMaxObservedRevenue()` (via `release()` or `syncObservedRevenue()`) updates `lastSyncTimestamp = block.timestamp`, regardless of whether `maxObservedRevenue` changed. |
+| **Entitlement never reads counter directly** | No code path computes entitlement from `RevenueCounter.recognizedRevenueUsd()` directly. All entitlement calculations use `maxObservedRevenue`. |
 
 ---
 
@@ -203,12 +236,25 @@ This simplifies the system:
 | Total allocations sum to exactly 2,400,000 ARM | ☐ |
 | Milestone table matches GOVERNANCE.md | ☐ |
 | RevenueCounter proxy deployed at precomputed address | ☐ |
-| RevenueLock deployed at precomputed address with correct constructor parameters | ☐ |
-| ARM token deployed — constructor mints directly to this contract, crowdfund, and treasury | ☐ |
-| ARM token constructor includes this contract's address in whitelist | ☐ |
-| ARM token constructor includes this contract's address in `delegateOnBehalf` caller list | ☐ |
-| `ARM.balanceOf(this) == 2_400_000e18` verified | ☐ |
+| RevenueLock deployed at precomputed address with correct constructor parameters (including `MAX_REVENUE_INCREASE_PER_DAY`) | ☐ |
+| `RevenueLock.lastSyncTimestamp` correctly initialized to deploy `block.timestamp` (NOT 0) | ☐ |
+| `RevenueLock.maxObservedRevenue` initialized to 0 (NOT seeded from RevenueCounter) | ☐ |
+| ARM token deployed — constructor mints entire 12M supply to bootstrap holder (deployment multisig) | ☐ |
+| ARM token constructor includes RevenueLock address in whitelist | ☐ |
+| ARM token constructor includes RevenueLock address in `delegateOnBehalf` caller list | ☐ |
+| Distribution transaction executed: 2.4M ARM to RevenueLock, 1.8M ARM to Crowdfund, 7.8M ARM to Treasury | ☐ |
+| Post-distribution: `RevenueLock` balance == 2,400,000 ARM exactly | ☐ |
+| Post-distribution: `Crowdfund` balance == 1,800,000 ARM exactly | ☐ |
+| Post-distribution: `Treasury` balance == 7,800,000 ARM exactly | ☐ |
+| Post-distribution: bootstrap holder balance == 0 ARM exactly | ☐ |
+| Post-distribution: bootstrap holder has no remaining ARM allowances in any protocol contract | ☐ |
+| Post-distribution: bootstrap holder whitelist entry in ARM token is noted as permanently inert (add-only whitelist; entry cannot be removed — security property is zero-balance, not zero-whitelist-entry) | ☐ |
+| `ARM.totalSupply()` == 12,000,000 × 10^18 (independent supply check) | ☐ |
 | `release()` tested on testnet with mocked revenue counter | ☐ |
+| `syncObservedRevenue()` tested on testnet — confirmed `lastSyncTimestamp` advances on every call regardless of whether `maxObservedRevenue` changed | ☐ |
+| `getCappedObservedRevenue()` view function tested — returns consistent values with state-modifying path | ☐ |
+| Monitoring bot for `syncObservedRevenue()` deployed and running at least daily | ☐ |
+| Protocol declared "live" ONLY after all verification checks above pass | ☐ |
 
 ---
 
@@ -216,14 +262,18 @@ This simplifies the system:
 
 ```
 RevenueLock
-  ├── reads: RevenueCounter.recognizedRevenueUsd() (UUPS proxy, fixed address)
+  ├── reads: RevenueCounter.recognizedRevenueUsd() — via _updateMaxObservedRevenue() ratchet only
+  │           (never reads counter directly for entitlement; ratchet enforces monotonic + rate-limited view)
+  ├── stores: maxObservedRevenue, lastSyncTimestamp, MAX_REVENUE_INCREASE_PER_DAY
   ├── calls: ARM.transfer(beneficiary, amount) (whitelisted sender)
   ├── calls: ARM.delegateOnBehalf(beneficiary, delegatee) (authorized caller)
-  ├── consumed by: Monitoring (reads Released events from this contract)
+  ├── exposes: syncObservedRevenue() — permissionless, called by monitoring bots at least daily
+  ├── exposes: getCappedObservedRevenue() — read-only view for monitoring dashboards
+  ├── consumed by: Monitoring (reads Released, ObservedRevenueUpdated events)
   └── consumed by: ARM_TOKEN.md §6.2 (voting enforcement architecture)
 
 RevenueCounter (separate contract, UUPS proxy)
   ├── emits: RevenueUpdated(cumulativeRevenue, previousRevenue)
-  ├── consumed by: RevenueLock (reads recognizedRevenueUsd())
+  ├── consumed by: RevenueLock via ratchet (not direct read for entitlement)
   └── consumed by: Monitoring (reads RevenueUpdated events)
 ```
