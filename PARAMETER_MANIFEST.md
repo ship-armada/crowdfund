@@ -124,7 +124,7 @@ These values are defined in GOVERNANCE.md and affect the ARM token / governor co
 |---|---|---|---|
 | Quiet period | 7 days post-finalization | GOVERNANCE.md | No proposals until day 8 |
 | Claim deadline | 3 years (94,608,000 seconds) | CROWDFUND.md §Finalization | Fixed term — but the crowdfund contract derives this from `finalizationTimestamp`, not a constructor arg |
-| Proposal threshold | 12,000 ARM | GOVERNANCE.md | |
+| Proposal threshold | 5,000 ARM | GOVERNANCE.md | |
 | Quorum | max(20% circulating, 100,000 ARM) | GOVERNANCE.md | |
 | `LIMIT_ACTIVATION_DELAY` | 24 days (2,073,600 seconds) | GOVERNANCE.md §Treasury Outflow Limits | Hardcoded constant in `ArmadaTreasuryGov`. Not governance-settable. Constrained by `_maxExtendedCycle() < LIMIT_ACTIVATION_DELAY` — governor timing setters revert if they would violate this invariant. |
 | `MAX_REVENUE_INCREASE_PER_DAY` | 10,000 × 10^6 (= $10,000 USDC/day) | REVENUE_LOCK.md §6, ARM_TOKEN.md §5.1 | Immutable, set at deployment in RevenueLock constructor. Not governance-settable. Calibrated to require minimum 100 days for malicious $0 → $1M full-unlock acceleration under captured governance, assuming `syncObservedRevenue()` is called at least daily. Defensive security calibration, not steady-state economic parameter. Effective rate cap depends on regular sync calls; without regular syncs, the cap accumulates over idle periods. |
