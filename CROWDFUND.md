@@ -9,13 +9,13 @@ Armada will raise funds by "word-of-mouth whitelisting." The allocation mechanis
 | Parameter | Value |
 |---|---|
 | Purpose | Fund MVP |
-| Minimum fund | $1,000,000 USDC |
+| Minimum fund | 1,000,000 USDC ($1.0m) |
 | Base fund | 1,200,000 ARM ($1.2M) |
 | Max fund (elastic) | 1,800,000 ARM ($1.8M) |
-| Expansion trigger | $1,500,000 in capped demand |
+| Expansion trigger | 1,500,000 USDC ($1.5M) in capped demand |
 | Percent of supply | 10 - 15% |
-| Price | $1.00 per ARM |
-| Timing | Pre-product |
+| Price | 1.00 USDC ($1.00) per ARM |
+| Timing | Testnet product |
 
 ---
 
@@ -253,7 +253,7 @@ The actual deterrents to governance concentration remain:
 1. **Real capital required at every slot.** $33k via recursive self-invite is the self-fill maximum. Oversubscription scales everyone back pro-rata.
 2. **Cap differential.** Hop-0 gets $15k per slot, hop-1 gets $4k per slot, hop-2 gets $1k per slot. The incremental benefit of filling lower hops is real but bounded by the invite tree structure.
 3. **Graph visibility.** The full invite graph is public in real time. Multi-hop participation by a single address — including recursive self-invitation — is fully legible.
-4. **Governance concentration has low ROI pre-revenue.** Accumulating votes in a protocol with no product yet is not obviously valuable.
+4. **Governance concentration has low ROI pre-revenue.** Accumulating votes in a protocol with a testnet product is not obviously valuable.
 
 Residual risk — a seed concentrating votes at scale — is primarily mitigated by trusted-network seed selection. The mechanism does not make it impossible; it makes it expensive and bounded. Same-address multi-hop is fully visible on-chain; multi-wallet self-fill is visible in graph shape but same-entity control is not provable.
 
