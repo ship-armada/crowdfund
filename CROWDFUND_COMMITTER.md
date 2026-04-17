@@ -407,6 +407,14 @@ In typical wallet-connected flows, private submission depends on the user wallet
 
 Including the invitee address in the EIP-712 signed message would eliminate the front-running risk but would require the inviter to know the invitee's wallet address before creating the link. This defeats the invite link model where the inviter creates a shareable link without knowing who will use it. The bearer credential design is intentional — private transaction submission is the appropriate UI-layer mitigation.
 
+**Operational expectations for Flashbots Protect:**
+
+- Flashbots Protect is a practical default on Ethereum mainnet. The easiest supported path today is a wallet configured to the Flashbots Protect RPC.
+- Private invite-link redemption must use a nonzero priority fee. Flashbots Protect drops transactions with a priority fee of 0.
+- Default Protect retries for a limited inclusion window. If the private transaction is not included and is dropped, the UI should surface a retry state rather than leaving the user in an indefinite pending state.
+- If using a wallet-configured Protect RPC, the UI should warn users not to switch RPCs/providers before confirmation. Some wallets may resend the transaction to the public mempool if the RPC is changed while the transaction is still pending.
+- If private submission is unavailable, the UI should warn clearly that public-mempool redemption may allow invite theft, and may recommend the direct invite path for sensitive placements.
+
 **Fallback: nonce revocation.**
 
 If a participant suspects their invite link has been leaked or compromised, the inviter can call `revokeInviteNonce(nonce)` to permanently invalidate the link before it is redeemed. This is an on-chain transaction (costs gas) and serves as a kill-switch.
