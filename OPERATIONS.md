@@ -56,7 +56,7 @@ Complete every item before calling the deploy script. Sign off with initials and
 | BASE_SALE | 1,200,000 × 10^18 | ☐ | ARM units |
 | MINIMUM_RAISE | 1,000,000 × 10^6 | ☐ | USDC units (6 decimals) |
 | EXPANSION_TRIGGER | 1,500,000 × 10^6 | ☐ | USDC units |
-| Seed budget | 150 | ☐ | Max seeds |
+| Hop-0 budget | 160 | ☐ | Max hop-0 participants |
 | Launch team hop-1 budget | 60 | ☐ | |
 | Launch team hop-2 budget | 60 | ☐ | |
 
@@ -170,7 +170,7 @@ See §4 for the launch-team invite procedure.
 | **Actor** | Deployer or ops |
 | **Action** | Load observer; confirm `ArmLoaded` and any `SeedAdded` events appear; confirm stats banner shows correct state. If `block.timestamp < openTimestamp`: observer should show "ARMED / PRE-OPEN" (or equivalent) — not "OPEN". Commitments will start working once the open timestamp is reached. If `block.timestamp ≥ openTimestamp`: observer should show "OPEN" with correct countdown. Test wallet connection on committer. |
 | **Preconditions** | Pre-open path: Step 5 complete. Open path: Steps 5–7 complete. |
-| **On-chain confirmation** | Observer reflects correct state (pre-open or open) and correct seed count |
+| **On-chain confirmation** | Observer reflects correct state (pre-open or open) and correct hop-0 count |
 | **Fallback** | If observer not loading: check RPC provider; check contract address in observer config |
 
 ### Step 9: Announce sale open
@@ -181,17 +181,17 @@ See §4 for the launch-team invite procedure.
 
 ## 4. Week-1 Operating Cadence
 
-Week 1 is the highest-risk operational phase. Seeds are added, launch-team budgets are spent, and these actions are either irreversible (`invite()` path) or immediately visible on-chain. Execute with care.
+Week 1 is the highest-risk operational phase. Hop-0 participants are added, launch-team budgets are spent, and these actions are either irreversible (`invite()` path) or immediately visible on-chain. Execute with care.
 
-### Adding a seed
+### Adding a hop-0 participant
 
 | | |
 |---|---|
 | **Actor** | ROOT (launch team multisig) |
 | **Action** | Call `addSeed(address)` |
-| **Preconditions** | Within week-1 window; seed count < 150; address not already a seed (duplicate `addSeed()` for the same address is invalid); address confirmed with seed (they know what they're signing up for); entry recorded in decision log (§10) |
+| **Preconditions** | Within week-1 window; hop-0 count < 160; address not already a seed (duplicate `addSeed()` for the same address is invalid); address confirmed with seed (they know what they're signing up for); entry recorded in decision log (§10) |
 | **On-chain confirmation** | `SeedAdded(address)` event emitted; observer shows new hop-0 node with edge from ROOT |
-| **Fallback** | If `addSeed()` reverts: check week-1 deadline; check seed count; see failure scenario §9.1 (wrong seed added) |
+| **Fallback** | If `addSeed()` reverts: check week-1 deadline; check hop-0 count; see failure scenario §9.1 (wrong seed added) |
 
 ### Issuing a launch-team hop-1 or hop-2 placement
 
@@ -207,8 +207,8 @@ Week 1 is the highest-risk operational phase. Seeds are added, launch-team budge
 
 Each day during week 1, the operator should verify:
 
-- [ ] Current seed count (observer or `seedCount()` view)
-- [ ] Remaining seed budget: 150 − current count
+- [ ] Current hop-0 count (observer or `seedCount()` view)
+- [ ] Remaining hop-0 budget: 160 − current count
 - [ ] Remaining launch-team hop-1 budget: 60 − issued count
 - [ ] Remaining launch-team hop-2 budget: 60 − issued count
 - [ ] Any unexpected addresses in the graph (check for anomalies)
@@ -222,7 +222,7 @@ Before the launch-team invite window closes (end of day 7), verify:
 
 | Condition | Status | Owner |
 |---|---|---|
-| All planned seeds added or explicitly deferred | ☐ | ROOT |
+| All planned hop-0 participants added or explicitly deferred | ☐ | ROOT |
 | All planned launch-team hop-1 placements issued or budget explicitly reserved | ☐ | ROOT |
 | All planned launch-team hop-2 placements issued or budget explicitly reserved | ☐ | ROOT |
 | Remaining budgets documented (no phantom unspent slots) | ☐ | ROOT |
@@ -398,7 +398,7 @@ When `block.timestamp > finalization_timestamp + (3 * 365 * 24 * 3600)`:
 
 ## 9. Failure Scenarios
 
-### 9.1 Wrong seed added
+### 9.1 Wrong hop-0 participant added
 
 **Detection:** Operator or community notices incorrect `SeedAdded` event.
 
@@ -524,7 +524,7 @@ Every irreversible action must be logged here before it is executed. This is the
 
 ### addSeed() log
 
-| # | Timestamp | Actor | Seed address | TX hash | Rationale | Seed count after |
+| # | Timestamp | Actor | Hop-0 address | TX hash | Rationale | Seed count after |
 |---|---|---|---|---|---|---|
 | 1 | | | | | | |
 | 2 | | | | | | |
@@ -564,7 +564,7 @@ Every irreversible action must be logged here before it is executed. This is the
 | Observer and committer URLs confirmed working | ☐ | Ops |
 | Monitoring alerts active | ☐ | Ops |
 | Security Council reachability confirmed | ☐ | Ops |
-| Initial seed list finalized | ☐ | ROOT |
+| Initial hop-0 list finalized | ☐ | ROOT |
 | Announcement drafted and ready | ☐ | Ops |
 
 **If any item is not ☐:** Do not proceed. Resolve first.
@@ -575,7 +575,7 @@ Every irreversible action must be logged here before it is executed. This is the
 
 | Condition | Status | Owner |
 |---|---|---|
-| All planned seeds added or explicitly deferred (documented) | ☐ | ROOT |
+| All planned hop-0 participants added or explicitly deferred (documented) | ☐ | ROOT |
 | Launch-team hop-1 budget accounted for (issued + reserved) | ☐ | ROOT |
 | Launch-team hop-2 budget accounted for (issued + reserved) | ☐ | ROOT |
 | Decision log entries complete for all addSeed/launchTeamInvite actions | ☐ | ROOT |

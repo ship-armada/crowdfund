@@ -36,7 +36,7 @@ Single source of truth for every concrete value that enters the deployed contrac
 
 | Parameter | Human-readable | Unix timestamp | Mutability | Verified | Notes |
 |---|---|---|---|---|---|
-| Open timestamp | `[TBD: date/time UTC]` | `[TBD]` | Immutable (constructor) | ☐ | Commitment window, seed additions, and invites begin here |
+| Open timestamp | `[TBD: date/time UTC]` | `[TBD]` | Immutable (constructor) | ☐ | Commitment window, hop-0 additions, and invites begin here |
 | Week-1 deadline | Open + 7 days | `[TBD]` | Immutable (constructor) | ☐ | `addSeed()` and `launchTeamInvite()` revert after this |
 | Commitment deadline | Open + 21 days | `[TBD]` | Immutable (constructor) | ☐ | `commit()`, `commitWithInvite()`, `invite()` revert after this |
 | Claim deadline | Finalization + 3 years | Computed at finalization | Immutable (derived) | — | `claim()` permitted when `block.timestamp <= finalizationTimestamp + 94_608_000`. Sweep eligible at `>`. |
@@ -86,10 +86,10 @@ Single source of truth for every concrete value that enters the deployed contrac
 
 | Parameter | Value | Mutability | Verified | Notes |
 |---|---|---|---|---|
-| Seed budget | 150 | Immutable (constant) | ☐ | Max `addSeed()` calls |
+| Hop-0 budget | 160 | Immutable (constant) | ☐ | Max `addSeed()` calls |
 | Launch-team hop-1 budget | 60 | Immutable (constant) | ☐ | Max `launchTeamInvite(_, 0)` calls |
 | Launch-team hop-2 budget | 60 | Immutable (constant) | ☐ | Max `launchTeamInvite(_, 1)` calls |
-| Max network size | ~1,740 nodes | Derived | — | 150 + 510 + 1,080 (see CROWDFUND.md) |
+| Max network size | ~1,840 nodes | Derived | — | 160 + 540 + 1,140 (see CROWDFUND.md) |
 
 ---
 
@@ -177,7 +177,7 @@ Every parameter in this contract falls into one of three categories:
 
 | Category | Meaning | Examples |
 |---|---|---|
-| **Immutable (constant)** | Hardcoded in contract bytecode. Cannot change after compilation. | BASE_SALE, MAX_SALE, HOP_CAP, HOP_CEILING_BPS, seed budget, invite limits |
+| **Immutable (constant)** | Hardcoded in contract bytecode. Cannot change after compilation. | BASE_SALE, MAX_SALE, HOP_CAP, HOP_CEILING_BPS, hop-0 budget, invite limits |
 | **Immutable (constructor)** | Set once at deployment via constructor args. Cannot change after deployment. | Treasury address, ROOT address, Security Council address, timestamps, chainId |
 | **Immutable (derived)** | Computed at deployment or finalization from other immutables. Cannot change. | DOMAIN_SEPARATOR, claim deadline (finalizationTimestamp + 3 years) |
 

@@ -127,7 +127,7 @@ Ian must produce the following before handoff. Each item has a pass/fail criteri
 
 | Evidence | Pass criterion |
 |---|---|
-| OPERATIONS.md §3 Steps 6–9 executed on testnet | Seed additions, observer/committer verification, announcement flow |
+| OPERATIONS.md §3 Steps 6–9 executed on testnet | Hop-0 additions, observer/committer verification, announcement flow |
 | Observer loads events from testnet deployment | Correct graph and stats display |
 | Committer wallet flow tested on testnet | Connect, commit, invite link, claim — all functional |
 
@@ -141,7 +141,7 @@ These are design choices that may look like bugs. They are deliberate and specif
 |---|---|---|
 | **Multi-slot model** — each invite creates a new participation slot with real economic value (increased cap + outgoing invite rights) | Any per-address limit that can be bypassed with a second wallet should not exist. Multi-slot makes concentration legible rather than hidden. | CROWDFUND.md §Invitation Limits, §Self-Filling |
 | **Same-address multi-hop** — one address can commit at hop-0, hop-1, and hop-2 simultaneously and receive ARM from all three | Transparency model. Same-address multi-hop creates unambiguous self-loops in the graph. | CROWDFUND.md §Self-Filling |
-| **$33k single-entity capture** — a seed can control a full subtree ($15k + 3×$4k + 6×$1k) via recursive self-invitation | This is the design ceiling, not a bug. It's 2.75% of the base raise. Bounded by real capital and graph visibility. | CROWDFUND.md §Self-Filling |
+| **$33k single-entity capture** — a hop-0 participant can control a full subtree ($15k + 3×$4k + 6×$1k) via recursive self-invitation | This is the design ceiling, not a bug. It's 2.75% of the base raise. Bounded by real capital and graph visibility. | CROWDFUND.md §Self-Filling |
 | **Duplicate same-hop invites are permitted** — same inviter can invite the same address to the same hop multiple times | Consistency: "allow everything, make it visible." Inviter's slot budget limits the scope. | CROWDFUND.md §Duplicate Invites |
 | **`refundMode` is a defined outcome, not a failure** — occurs when capped_demand qualifies but net_proceeds falls short after allocation | Happens at base size when hop-0 is oversubscribed. Cannot happen after expansion. | CROWDFUND.md §Finalization step 5 |
 | **Over-cap deposits are accepted, not reverted** — excess is refunded at settlement | Simpler UX. Participants don't need to calculate exact caps. | CROWDFUND.md §Commitment |

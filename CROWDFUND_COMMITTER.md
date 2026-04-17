@@ -81,12 +81,12 @@ Display:
 
 ```
 Your positions:
-  Hop-0 (seed)     — invited by Armada        Cap: $15,000   Committed: $0
+  Hop-0     — invited by Armada        Cap: $15,000   Committed: $0
   Hop-1 (2 slots)  — invited by alice.eth ×2  Cap: $8,000    Committed: $0
   Hop-2             — invited by bob.eth       Cap: $1,000    Committed: $0
 ```
 
-Caps scale with invites received: `invites_received × HOP_CAP[hop]`. An address invited twice to hop-1 has a $8,000 cap (2 × $4,000). Seeds always have 1 slot at hop-0.
+Caps scale with invites received: `invites_received × HOP_CAP[hop]`. An address invited twice to hop-1 has a $8,000 cap (2 × $4,000). Hop-0 participants always have 1 slot at hop-0.
 
 If the address has no invitations: "You haven't been invited to this crowdfund yet."
 
@@ -94,7 +94,7 @@ If the address has already committed at some hops, show remaining capacity:
 
 ```
 Your positions:
-  Hop-0 (seed)     — invited by Armada        Cap: $15,000   Committed: $12,000   Remaining: $3,000
+  Hop-0     — invited by Armada        Cap: $15,000   Committed: $12,000   Remaining: $3,000
   Hop-1 (2 slots)  — invited by alice.eth ×2  Cap: $8,000    Committed: $8,000    ✓ Full
   Hop-2             — invited by bob.eth       Cap: $1,000    Committed: $0        Remaining: $1,000
 ```
@@ -759,7 +759,7 @@ If the invite link is invalid, expired, or already redeemed, the landing page sh
 - Allocation preview for uncommitted participants ("what would I get if I were invited?")
 - Batch operations (commit to all hops in one transaction — not supported by contract)
 - Social features (messaging between participants, invite request flow)
-- Admin/launch-team interface (seed management, launch-team invite budget — handled via direct contract calls or separate tooling)
+- Admin/launch-team interface (hop-0 management, launch-team invite budget — handled via direct contract calls or separate tooling)
 - Invite link recovery across devices (links are stored client-side only — inviter must copy/save them)
 
 **Deferred but designed for:**

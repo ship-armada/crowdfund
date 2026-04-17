@@ -2,7 +2,7 @@
 
 ## Overview
 
-Armada will raise funds by "word-of-mouth whitelisting." The allocation mechanism is algorithmic and predeclared. Once the commitment window opens, participant allocations are determined entirely by the rules of the contract, not by launch team discretion. The initial network shape (who is invited as a seed, and who the launch team invites directly) is determined by the launch team before and during the window. This is intentional and disclosed.
+Armada bootstraps governance through a word-of-mouth whitelist crowdfund. The allocation mechanism is algorithmic and predeclared. Once the commitment window opens, participant allocations are determined entirely by the rules of the contract, not by launch team discretion. The initial network shape (who is added as a hop-0 participant, and who the launch team invites directly) is determined by the launch team before and during the window. This is intentional and disclosed.
 
 ### Parameters
 
@@ -75,19 +75,19 @@ Governance power follows economic commitment. Until the protocol generates reven
 
 ### Design Philosophy
 
-This is a trusted-network crowdfund, not viral growth. Participation requires invitation from someone closer to the core. Hop-0 and hop-1 each have an enforced ceiling — the maximum fraction of the available pool each can absorb. Hop-2 has no enforced ceiling; instead it has a reserved floor (first claim on 5% of the fund) and an effective ceiling determined by the floor plus any hop-1 leftover. Actual allocation is demand-driven: each hop receives whatever it committed, up to its effective ceiling, and anything unused rolls forward to later hops. The launch team's invite budget closes after week 1; seeds and hop-1 invitees may invite throughout all three weeks; commitments remain open for the full three weeks.
+This is a trusted-network crowdfund, not viral growth. Participation requires invitation from someone closer to the core. Hop-0 and hop-1 each have an enforced ceiling — the maximum fraction of the available pool each can absorb. Hop-2 has no enforced ceiling; instead it has a reserved floor (first claim on 5% of the fund) and an effective ceiling determined by the floor plus any hop-1 leftover. Actual allocation is demand-driven: each hop receives whatever it committed, up to its effective ceiling, and anything unused rolls forward to later hops. The launch team's invite budget closes after week 1; hop-0 and hop-1 participants may invite throughout all three weeks; commitments remain open for the full three weeks.
 
-### Initial Network Seeding
+### Initial Network
 
-The people creating Armada are inviting their network of allies to help form the Armada community. Seeds, and the initial invitations from the launch team, are the first nodes in a trust network that extends outward through word of mouth.
+The people creating Armada are inviting their network of allies to help form the Armada community. Hop-0 participants, and the initial invitations from the launch team, are the first nodes in a trust network that extends outward through word of mouth.
 
-Seed criteria are determined by the launch team based on demonstrated alignment, contribution, and long-term interest in privacy infrastructure.
+Hop-0 selection criteria are determined by the launch team based on demonstrated alignment, contribution, and long-term interest in privacy infrastructure.
 
-**Maximum seed count: 150.** The total number of seeds is capped at 150. This bounds the maximum network size at approximately 1,740 participant slots (150 seed nodes + up to 510 hop-1 nodes + up to 1,080 hop-2 nodes). Arithmetic: hop-1 slots = (150 seeds × 3 invites) + 60 launch-team hop-1 = 510; hop-2 slots = (510 hop-1 nodes × 2 invites) + 60 launch-team hop-2 = 1,080. Because the same address may occupy multiple hop levels, the number of distinct individuals may be lower.
+**Maximum hop-0 count: 160.** The total number of hop-0 participants is capped at 160. This bounds the maximum network size at approximately 1,840 participant slots (160 hop-0 nodes + up to 540 hop-1 nodes + up to 1,140 hop-2 nodes). Arithmetic: hop-1 slots = (160 hop-0 × 3 invites) + 60 launch-team hop-1 = 540; hop-2 slots = (540 hop-1 nodes × 2 invites) + 60 launch-team hop-2 = 1,140. Because the same address may occupy multiple hop levels, the number of distinct individuals may be lower.
 
-**Seed additions.** The launch team may add new seeds at any point during the first week, up to the 150-seed cap. Seeds added later in week 1 naturally have less of the 3-week commitment window remaining — that's the cost of late addition. Once added, a seed may issue invitations throughout the full three weeks.
+**Hop-0 additions.** The launch team may add new hop-0 participants at any point during the first week, up to the 160-participant cap. Participants added later in week 1 naturally have less of the 3-week commitment window remaining — that's the cost of late addition. Once added, a hop-0 participant may issue invitations throughout the full three weeks.
 
-**Launch team hop-1 invite budget.** In addition to seeds, the launch team holds a predeclared budget of 60 direct hop-1 placements, not tied to any seed slot. This allows the launch team to invite allies with direct relationships to hop-1 without creating phantom unfilled hop-0 slots. The budget is fixed for the duration of the crowdfund.
+**Launch team hop-1 invite budget.** In addition to hop-0 participants, the launch team holds a predeclared budget of 60 direct hop-1 placements, not tied to any hop-0 slot. This allows the launch team to invite allies with direct relationships to hop-1 without creating phantom unfilled hop-0 slots. The budget is fixed for the duration of the crowdfund.
 
 Launch team hop-1 invitees are full hop-1 participants: same cap ($4,000), same invite rights (up to 2 hop-2 invites each). They appear in the invite graph with the launch team address as inviter. In the `(address, hop)` node model, launch-team-issued invites originate from a designated `(launch_team_address, ROOT)` sentinel node — a fixed address with no hop level and no cap, whose sole role is to issue the predeclared launch team budget. This node is not a participant and makes no commitment.
 
@@ -99,13 +99,13 @@ Launch team hop-1 invitees are full hop-1 participants: same cap ($4,000), same 
 
 | Hop | Description | Ceiling | Floor | Cap | Invites |
 |---|---|---|---|---|---|
-| 0 | Seeds (max 150) | 70% | — | $15,000 | 3 |
-| 1 | Seed invites + launch team invitations | 45% | — | $4,000 | 2 |
+| 0 | Hop-0 (max 160) | 70% | — | $15,000 | 3 |
+| 1 | Hop-0 invites + launch team invitations | 45% | — | $4,000 | 2 |
 | 2 | Hop-1 invites + launch team invitations | — ¹ | 5% | $1,000 | 0 |
 
 ¹ Hop-2 has no enforced ceiling — only a floor. Its effective ceiling is `hop2_floor + hop1_leftover`, which can reach the full sale size if hop-0 and hop-1 are both empty. The 10% figure shown in some earlier drafts was removed as dead code (`HOP_CEILING_BPS` contains no entry for hop-2).
 
-The launch team holds a predeclared invite budget separate from hop-0: 60 hop-1 invitations and 60 hop-2 invitations. These do not consume seed invite slots. Launch team invitations may only be issued during the first week.
+The launch team holds a predeclared invite budget separate from hop-0: 60 hop-1 invitations and 60 hop-2 invitations. These do not consume hop-0 invite slots. Launch team invitations may only be issued during the first week.
 
 Hop-2 has first claim on 5% of the fund before hop-0 and hop-1 ceilings are applied. This reserved capacity is always available to hop-2, regardless of earlier hop demand, but hop-2 only receives it to the extent hop-2 participants actually commit. Hop-0 and hop-1 ceilings are calculated against the fund net of this reservation. At base fund: $60k reserved for hop-2, hop-0 and hop-1 compete for the remaining $1.14M.
 
@@ -143,13 +143,13 @@ Invitations are signed on-chain (inviter → invitee, with hop level). The invit
 
 - The same address may appear at multiple hop levels as a distinct node at each
 - An invite edge connects `(inviter_address, inviter_hop)` → `(invitee_address, invitee_hop)`
-- A seed (hop-0) inviting their own address to hop-1 creates a self-loop edge, visible as such in the graph
-- Invite slot consumption is per `(address, hop)` node: a hop-0 node has 3 outgoing invite slots; a hop-1 node has 2. A single address occupying both hop-0 and hop-1 has both slot budgets, consumed independently. **Each invite to a given hop creates a separate participation slot, up to a per-hop stacking cap:** hop-0 = 1 (seeds are added once), hop-1 = 10, hop-2 = 20. The address's effective cap at that hop equals `participation_slots[(address, hop)] × HOP_CAP[hop]`. Invite rights also scale: each invite to hop-1 grants 2 outgoing hop-2 invite slots. A natural consequence: a seed who self-invites their own address to hop-1 three times occupies 3 hop-1 slots (cap: 3 × $4k = $12k) and gains 6 outgoing hop-2 invite slots — giving one address unilateral control over a full $33k subtree, fully legible in the graph. The self-fill analysis ($33k maximum) remains valid because the recursive self-invite tree produces at most 1 hop-0, 3 hop-1, and 6 hop-2 slots — all well within the per-hop stacking caps. For full entity-level capture analysis, see Self-Filling section.
+- A hop-0 participant inviting their own address to hop-1 creates a self-loop edge, visible as such in the graph
+- Invite slot consumption is per `(address, hop)` node: a hop-0 node has 3 outgoing invite slots; a hop-1 node has 2. A single address occupying both hop-0 and hop-1 has both slot budgets, consumed independently. **Each invite to a given hop creates a separate participation slot, up to a per-hop stacking cap:** hop-0 = 1 (hop-0 participants are added once), hop-1 = 10, hop-2 = 20. The address's effective cap at that hop equals `participation_slots[(address, hop)] × HOP_CAP[hop]`. Invite rights also scale: each invite to hop-1 grants 2 outgoing hop-2 invite slots. A natural consequence: a hop-0 participant who self-invites their own address to hop-1 three times occupies 3 hop-1 slots (cap: 3 × $4k = $12k) and gains 6 outgoing hop-2 invite slots — giving one address unilateral control over a full $33k subtree, fully legible in the graph. The self-fill analysis ($33k maximum) remains valid because the recursive self-invite tree produces at most 1 hop-0, 3 hop-1, and 6 hop-2 slots — all well within the per-hop stacking caps. For full entity-level capture analysis, see Self-Filling section.
 - For allocation, each `(address, hop)` node participates independently — an address at hop-0 and hop-1 receives ARM from both hop buckets, accumulated into a single address balance
 
 This model makes entity-level participation unambiguously legible without wallet correlation. Separate-wallet self-fill is also permitted and visible in graph shape, but same-entity control across wallets is not provable on-chain.
 
-**An address may appear in multiple independent subtrees.** There is no constraint preventing address_a from being a seed in their own right (hop-0) while also being invited by an unrelated seed to hop-1 or hop-2. Each `(address, hop)` node participates in allocation independently, so address_a accumulates ARM from every position it holds across all subtrees. All such participation is visible in the graph — every edge is public — so participants can observe multi-subtree presence directly. This is a deliberate choice: we cannot prevent it, and allowing the same address makes concentration legible rather than hidden.
+**An address may appear in multiple independent subtrees.** There is no constraint preventing address_a from being a hop-0 participant in their own right while also being invited by an unrelated hop-0 participant to hop-1 or hop-2. Each `(address, hop)` node participates in allocation independently, so address_a accumulates ARM from every position it holds across all subtrees. All such participation is visible in the graph — every edge is public — so participants can observe multi-subtree presence directly. This is a deliberate choice: we cannot prevent it, and allowing the same address makes concentration legible rather than hidden.
 
 ### Invite Mechanism
 
@@ -222,11 +222,11 @@ Invite links (Path A) can be revoked before redemption by calling `revokeInviteN
 
 ### Self-Filling and Max Single-Entity Capture
 
-A participant may commit at multiple hop levels using a single address, and receives ARM allocation from each hop they participate in — subject to that hop's per-slot cap and pro-rata rules. This is the preferred model for transparency: a seed using the same address across all hops creates unambiguously legible self-loop edges in the invite graph, and receives their full multi-hop allocation without any penalty.
+A participant may commit at multiple hop levels using a single address, and receives ARM allocation from each hop they participate in — subject to that hop's per-slot cap and pro-rata rules. This is the preferred model for transparency: a hop-0 participant using the same address across all hops creates unambiguously legible self-loop edges in the invite graph, and receives their full multi-hop allocation without any penalty.
 
-An address may appear at a given hop multiple times, up to the per-hop stacking cap (hop-0 = 1, hop-1 = 10, hop-2 = 20). Each invite to a hop creates a separate participation slot, and the effective cap equals `participation_slots[(address, hop)] × HOP_CAP[hop]`. A seed using all 3 of its hop-1 invite slots on itself gains 3 hop-1 slots (cap: 3 × $4k = $12k), and each of those slots grants 2 hop-2 invites — 6 hop-2 slots total (cap: 6 × $1k = $6k).
+An address may appear at a given hop multiple times, up to the per-hop stacking cap (hop-0 = 1, hop-1 = 10, hop-2 = 20). Each invite to a hop creates a separate participation slot, and the effective cap equals `participation_slots[(address, hop)] × HOP_CAP[hop]`. A hop-0 participant using all 3 of its hop-1 invite slots on itself gains 3 hop-1 slots (cap: 3 × $4k = $12k), and each of those slots grants 2 hop-2 invites — 6 hop-2 slots total (cap: 6 × $1k = $6k).
 
-Maximum self-fill for a seed via full recursive self-invitation with one address:
+Maximum self-fill for a hop-0 participant via full recursive self-invitation with one address:
 
 | Hop | Per-slot cap | Slots (self-invite) | Max USDC (single address) |
 |-----|-------------|---------------------|--------------------------|
@@ -235,11 +235,11 @@ Maximum self-fill for a seed via full recursive self-invitation with one address
 | Hop-2 | $1,000 | 6 (from hop-1 invites) | $6,000 |
 | **Total** | | | **$33,000** |
 
-An address may also receive invites from other participants (e.g., another seed inviting the same address to hop-1), which adds further slots beyond the self-invite tree, up to the per-hop stacking cap. The per-hop cap for any address is `min(participation_slots[(address, hop)], maxInvitesReceived[hop]) × HOP_CAP[hop]`. An address invited by multiple independent seeds accumulates across all subtrees; all such participation is visible in the graph.
+An address may also receive invites from other participants (e.g., another hop-0 participant inviting the same address to hop-1), which adds further slots beyond the self-invite tree, up to the per-hop stacking cap. The per-hop cap for any address is `min(participation_slots[(address, hop)], maxInvitesReceived[hop]) × HOP_CAP[hop]`. An address invited by multiple independent hop-0 participants accumulates across all subtrees; all such participation is visible in the graph.
 
 Participating across hops using separate wallets is also permitted. Graph edges are visible, but same-entity control across separate wallets cannot be proven on-chain.
 
-A seed committing at all three hops via full recursive self-invitation gets ARM allocation at all three — up to $15k from hop-0, $12k from hop-1 (3 slots × $4k), and $6k from hop-2 (6 slots × $1k) — for a maximum of $33k, subject to pro-rata scaling if any hop is oversubscribed. $33,000 out of a $1.2M base fund is 2.75%.
+A hop-0 participant committing at all three hops via full recursive self-invitation gets ARM allocation at all three — up to $15k from hop-0, $12k from hop-1 (3 slots × $4k), and $6k from hop-2 (6 slots × $1k) — for a maximum of $33k, subject to pro-rata scaling if any hop is oversubscribed. $33,000 out of a $1.2M base fund is 2.75%.
 
 The actual deterrents to governance concentration remain:
 
@@ -248,7 +248,7 @@ The actual deterrents to governance concentration remain:
 3. **Graph visibility.** The full invite graph is public in real time. Multi-hop participation by a single address — including recursive self-invitation — is fully legible.
 4. **Governance concentration has low ROI pre-revenue.** Accumulating votes in a protocol with a testnet product is not obviously valuable.
 
-Residual risk — a seed concentrating votes at scale — is primarily mitigated by trusted-network seed selection. The mechanism does not make it impossible; it makes it expensive and bounded. Same-address multi-hop is fully visible on-chain; multi-wallet self-fill is visible in graph shape but same-entity control is not provable.
+Residual risk — a hop-0 participant concentrating votes at scale — is primarily mitigated by trusted-network hop-0 selection. The mechanism does not make it impossible; it makes it expensive and bounded. Same-address multi-hop is fully visible on-chain; multi-wallet self-fill is visible in graph shape but same-entity control is not provable.
 
 ---
 
@@ -259,17 +259,17 @@ Residual risk — a seed concentrating votes at scale — is primarily mitigated
 | Phase | Duration |
 |---|---|
 | Launch team invite window | Days 1–7 (first week only) |
-| Seed invite window | Days 1–21 (full 3 weeks) |
+| Hop-0 invite window | Days 1–21 (full 3 weeks) |
 | Hop-1 invite window | Days 1–21 (full 3 weeks) |
 | Commitment window | Days 1–21 (full 3 weeks) |
 
-The launch team's invite budget (seeds, hop-1, hop-2 placements) may only be issued during the first week. Seeds and hop-1 participants may issue invitations throughout the full three weeks — right up to the commitment deadline. This limits the launch team's ability to issue new invitations with live oversubscription data visible (they can still do so during days 1–7 but not after), while giving seeds and hop-1 invitees maximum flexibility to propagate the network throughout the window. Note: a launch team hop-1 invitee issued on day 7 has the full remaining 14 days to issue their own hop-2 invitations — the launch team's invite window closing does not affect hop-1 invite rights.
+The launch team's invite budget (hop-0 additions, hop-1, hop-2 placements) may only be issued during the first week. Hop-0 and hop-1 participants may issue invitations throughout the full three weeks — right up to the commitment deadline. This limits the launch team's ability to issue new invitations with live oversubscription data visible (they can still do so during days 1–7 but not after), while giving hop-0 and hop-1 participants maximum flexibility to propagate the network throughout the window. Note: a launch team hop-1 invitee issued on day 7 has the full remaining 14 days to issue their own hop-2 invitations — the launch team's invite window closing does not affect hop-1 invite rights.
 
 ### Commitment
 
 - **Currency:** USDC
 - **Method:** Commit to escrow contract
-- **Multi-hop commits from the same address are permitted.** An address may commit at multiple hop levels and receives ARM allocation from each hop it participates in. This makes entity-level participation unambiguously legible on-chain: a seed who also fills hop-1 and hop-2 slots with the same address is visibly doing so, and receives the ARM from all three pools.
+- **Multi-hop commits from the same address are permitted.** An address may commit at multiple hop levels and receives ARM allocation from each hop it participates in. This makes entity-level participation unambiguously legible on-chain: a hop-0 participant who also fills hop-1 and hop-2 slots with the same address is visibly doing so, and receives the ARM from all three pools.
 - **Multiple commitments:** A participant may commit multiple times to any hop. Commitments from the same address at the same hop are aggregated into a single running balance, capped at `participation_slots[(address, hop)] × HOP_CAP[hop]` for allocation purposes (each invite to a hop creates a separate participation slot).
 - **Visibility:** Address, amount, hop, and invite edges are all public in real time
 - **No withdrawals:** Commitments are final once submitted. Participants cannot withdraw USDC before the deadline. The commitment window is a maximum of 3 weeks; participants should only commit amounts they are prepared to lock for that period.
@@ -554,8 +554,8 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 
 ## Risk Acknowledgments
 
-- **Seed quality is the critical dependency.** The allocation mechanism is algorithmic, but the network's governance quality depends entirely on the launch team's seed selection. Trusted-network seed selection is the primary defence against governance concentration and Sybil attacks — the contract mechanism does not substitute for it. Maximum single-entity capture from one subtree is $33k (2.75% of base fund); an address invited by multiple seeds accumulates beyond this. See Self-Filling section.
-- **At base size, hop-0 alone cannot meet the minimum raise.** Hop-0's ceiling ($798k at base fund) is below the minimum raise ($1M). However, the same addresses filling hop-0 can also commit at hop-1 and hop-2 — those contributions count independently. For example, 67 seeds each committing $15k at hop-0 and $4k at hop-1 produces $1.273M capped_demand (base sale) and ~$1.066M net_proceeds — sufficient to finalize. After expansion (capped_demand ≥ $1.5M), hop-0's ceiling rises to $1,197k and hop-0 alone can succeed.
+- **Hop-0 selection quality is the critical dependency.** The allocation mechanism is algorithmic, but the network's governance quality depends entirely on the launch team's hop-0 selection. Trusted-network hop-0 selection is the primary defence against governance concentration and Sybil attacks — the contract mechanism does not substitute for it. Maximum single-entity capture from one subtree is $33k (2.75% of base fund); an address invited by multiple hop-0 participants accumulates beyond this. See Self-Filling section.
+- **At base size, hop-0 alone cannot meet the minimum raise.** Hop-0's ceiling ($798k at base fund) is below the minimum raise ($1M). However, the same addresses filling hop-0 can also commit at hop-1 and hop-2 — those contributions count independently. For example, 67 hop-0 participants each committing $15k at hop-0 and $4k at hop-1 produces $1.273M capped_demand (base sale) and ~$1.066M net_proceeds — sufficient to finalize. After expansion (capped_demand ≥ $1.5M), hop-0's ceiling rises to $1,197k and hop-0 alone can succeed.
 - **Early governance proposals may pass on thin quorum.** Voting power activates immediately upon claim and delegation with no averaging period. The first proposals after the 7-day quiet period may be created when only a small fraction of participants have claimed. Participants are strongly encouraged to claim and delegate promptly after finalization.
 - **Governance capture is possible.** Whitelist is the mitigation, not a guarantee.
 - **Propagation may fail.** Unused supply flows to treasury.
@@ -563,7 +563,7 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 - **Tokens are non-transferable at launch by design.** Transferability prioritizes governance participation during the formative phase. Token transfers can be unlocked by governance proposal.
 - **Automatic wind-down is a real risk.** If the protocol does not reach $10k revenue by December 31, 2026, wind-down initiates automatically.
 - **Multi-slot-per-hop is the core implementation dependency.** The entire allocation math — cap scaling, self-fill analysis, `hopDemand`, `computeAllocation()` — depends on the contract modeling `slotCount[address][hop]` as a counter that increments with each invite received. If the contract models hop access as a boolean rather than a counter, the spec's math is wrong. This must be confirmed in code before the crowdfund math is treated as settled.
-- **Wind-down / ARM token integration is an audit hotspot.** Wind-down assumes it can call `setTransferable(true)`, sweep non-ARM assets, exclude four hardcoded addresses from the redemption denominator, and end governance permanently. These hooks between the wind-down contract, ARM token, governor, and redemption contract are load-bearing — if any are slightly off, the "credible backstop" story weakens. Priority audit target.
+- **Wind-down / ARM token integration is an audit hotspot.** Wind-down assumes it can call `setTransferable(true)`, sweep non-ARM assets, exclude four hardcoded addresses from the redemption denominator, and end governance permanently. These hooks between the wind-down contract, ARM token, governor, and redemption contract are load-bearing — if any are slightly off, the wind-down integration story weakens. Priority audit target.
 
 ---
 
@@ -583,12 +583,12 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 | Hop allocation model | Demand-driven ceilings, not fixed reserves | Capacity follows actual demand; no hop is guaranteed allocation it didn't earn; unused capacity rolls forward |
 | Overlapping ceilings | Hop-0 and hop-1 sum to 115% of available (70/45); hop-2 has no fixed ceiling | Hop-0 and hop-1 can absorb more if the other underperforms. Hop-2's effective ceiling is floor + hop-1 leftover — it can grow arbitrarily large if earlier hops are empty, preserving full rollover flexibility |
 | Hop-2 hard floor | 5% of the fund reserved — hop-2 has first claim on this capacity | Hop-2 is governance breadth and ecosystem signal. The reserved capacity ensures hop-2 can always absorb up to the floor amount regardless of earlier hop demand. Actual receipt depends on hop-2 demand. |
-| Multi-hop commits from single address | Permitted; receives ARM allocation at each hop independently | $33k per-subtree ceiling (2.75% of base raise). An address invited by multiple seeds accumulates across all subtrees — no global cap, but all participation is visible in the graph. Concentration is legible, not preventable. |
-| Invite window | Launch team: days 1–7 only; Seeds and hop-1: full 3 weeks | Narrows launch team discretion to week 1 — after that, no new seeds can be added and no new launch team invites can be issued. Live oversubscription data is visible during days 1–7, so this reduces but does not eliminate data-informed invite issuance. Seeds and hop-1 invitees retain full flexibility throughout. |
-| Rolling seed additions | Launch team may add seeds during week 1 only, up to 150-seed cap | Constrained to launch team's invite window. Once added, seeds may invite throughout the full 3 weeks. |
-| Seed cap | 150 seeds maximum | Bounds network to ~1,740 participant slots (nodes); distinct individuals may be fewer under single-address multi-hop |
-| Launch team invite budgets | 60 hop-1 + 60 hop-2 invitations, predeclared, week 1 only | Seeds the initial community with allies not connected to any seed. |
-| Rollover | Unconditional — leftover always rolls forward | Rollover thresholds dropped as weak sybil protection; seed selection is the real defence. Simpler contract. |
+| Multi-hop commits from single address | Permitted; receives ARM allocation at each hop independently | $33k per-subtree ceiling (2.75% of base raise). An address invited by multiple hop-0 participants accumulates across all subtrees — no global cap, but all participation is visible in the graph. Concentration is legible, not preventable. |
+| Invite window | Launch team: days 1–7 only; Hop-0 and hop-1: full 3 weeks | Narrows launch team discretion to week 1 — after that, no new hop-0 participants can be added and no new launch team invites can be issued. Live oversubscription data is visible during days 1–7, so this reduces but does not eliminate data-informed invite issuance. Hop-0 and hop-1 participants retain full flexibility throughout. |
+| Rolling hop-0 additions | Launch team may add hop-0 participants during week 1 only, up to 160-participant cap | Constrained to launch team's invite window. Once added, hop-0 participants may invite throughout the full 3 weeks. |
+| Hop-0 cap | 160 hop-0 participants maximum | Bounds network to ~1,840 participant slots (nodes); distinct individuals may be fewer under single-address multi-hop |
+| Launch team invite budgets | 60 hop-1 + 60 hop-2 invitations, predeclared, week 1 only | Extends the initial community with allies not connected to any hop-0 participant. |
+| Rollover | Unconditional — leftover always rolls forward | Rollover thresholds dropped as weak sybil protection; hop-0 selection is the real defence. Simpler contract. |
 | No commitment withdrawals | Commitments are final once submitted | Eliminates gaming risk and simplifies contract; 3-week maximum lock period is known upfront |
 | ARM pre-load requirement | 1,800,000 ARM loaded before window opens | Ensures claim records written at finalization are always backed by sufficient ARM; enforced by contract flag |
 | Settlement model | Lazy settlement: aggregate finalization + per-user computation at claim time | `finalize()` writes only aggregate state (sale size, ceilings, hopDemand, totalAllocatedArm) — zero per-participant storage writes. `claim()` computes each participant's allocation on-the-fly from aggregate parameters + their own commitment records. Net proceeds push to treasury at finalization. ARM and refunds pull at claim time. |
@@ -608,7 +608,7 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 | Function | Caller | Parameters | Preconditions | Effects |
 |---|---|---|---|---|
 | `loadArm()` | Anyone (once) | — | Contract holds ≥ MAX_SALE ARM; not already called | Sets ARM-loaded flag; arms the sale (commitment window opens at configured `openTimestamp`, not at the moment `loadArm()` is called); emits `ArmLoaded` |
-| `addSeed(address)` | Launch team | Seed address | ARM loaded; week 1 only; seed count < 150; address not already a seed; not cancelled; not finalized | Adds address as hop-0 node; records edge from ROOT; emits `SeedAdded`; decrements seed budget |
+| `addSeed(address)` | Launch team | Hop-0 address | ARM loaded; week 1 only; hop-0 count < 160; address not already hop-0; not cancelled; not finalized | Adds address as hop-0 node; records edge from ROOT; emits `SeedAdded`; decrements hop-0 budget |
 | `launchTeamInvite(invitee, fromHop)` | Launch team | Target address, inviter's hop (0 or 1; invitee joins at `fromHop + 1`) | ARM loaded; week 1 only; budget remaining for target hop; not cancelled; not finalized | Records invite edge from ROOT to invitee at `fromHop + 1`; emits `Invited(ROOT, invitee, fromHop + 1, 0)`; decrements launch team budget |
 | `commit(hop, amount)` | Participant | Hop level, USDC amount | ARM loaded; pre-deadline; not cancelled; not finalized; `amount > 0`; address holds at least one participation slot at this hop (hop-0 slots from `SeedAdded`; hop-1/hop-2 slots from `Invited`) | Records commitment; transfers USDC to escrow; emits `Committed` |
 | `invite(invitee, fromHop)` | Inviter | Target address, inviter's hop | ARM loaded; pre-deadline; not cancelled; not finalized; caller has available slots at `fromHop` | Records invite edge; creates a new participation slot for invitee at `fromHop + 1` (increases invitee's cap by `HOP_CAP[fromHop + 1]`); emits `Invited(caller, invitee, fromHop + 1, 0)`; decrements inviter's slot count at `fromHop` |

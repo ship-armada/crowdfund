@@ -99,7 +99,7 @@ Always visible at top. Updates in real time.
 │  Hop-0: $987,000 (131% of ceiling)    Hop-1: $342,000 (67% of ceiling) │
 │  Hop-2: $48,000 (80% of floor)                                         │
 │  Capped Demand: $1,377,000    Sale Size: BASE ($1.2M)    Status: OPEN  │
-│  Seeds: 142/150    Participants: 847    Time remaining: 6d 14h          │
+│  Hop-0: 142/160    Participants: 847    Time remaining: 6d 14h          │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -145,7 +145,7 @@ Labeled "Armada" with a distinct visual treatment (protocol icon or logo mark, n
 - Four vertical columns: ROOT | Hop-0 | Hop-1 | Hop-2
 - Within each column, nodes are arranged vertically, grouped by inviter subtree where possible
 - When a subtree is too large to display inline, it collapses with a count indicator ("12 invitees") expandable on click
-- Panning and zooming via mouse/touch — the full graph at 150 seeds will not fit on one screen
+- Panning and zooming via mouse/touch — the full graph at 160 hop-0 participants will not fit on one screen
 
 **Empty state:** Before any seeds are added, the view shows only the Armada ROOT node with a "Waiting for seeds…" indicator.
 
@@ -301,7 +301,7 @@ src/
 
 ### Performance targets
 
-- Initial load: < 3s for full event history at ~2,000 events (150 seeds × ~10 events each)
+- Initial load: < 3s for full event history at ~2,000 events (160 hop-0 participants × ~10 events each)
 - Live update: < 500ms from event to render
 - Smooth interaction at 1,740 nodes (full network) — may require virtualized rendering or canvas-based graph at scale
 

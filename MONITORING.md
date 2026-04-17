@@ -189,7 +189,7 @@ Post-finalization, track:
 | Field | Value |
 |---|---|
 | **Signal** | Derived seed count from `SeedAdded` |
-| **Condition** | Seed count reaches 80%, 90%, 100% of configured budget (150) |
+| **Condition** | Seed count reaches 80%, 90%, 100% of configured budget (160) |
 | **Severity** | P2 at 80%/90%; P1 at 100% |
 | **Meaning** | Week-1 hop-0 expansion capacity running low |
 | **Runbook** | `OPERATIONS.md` §4 Week-1 go/no-go checkpoint; §10 decision log |
@@ -404,7 +404,7 @@ Operators must have read access to the following views before and throughout the
 
 ### 10.2 Budget view
 
-- Seed count used / 150 total
+- Hop-0 count used / 160 total
 - Launch-team hop-1 placements used / 60 total
 - Launch-team hop-2 placements used / 60 total
 - Inviter slot consumption per active seed node (where reconstructable from events)
