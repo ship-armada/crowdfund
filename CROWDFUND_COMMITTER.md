@@ -387,6 +387,30 @@ On success: the invitee is redirected to the main app with their new position vi
 - Insufficient USDC: "Your USDC balance is insufficient."
 - USDC not approved: "You need to approve USDC spending first."
 
+### Front-running risk for invite link redemption
+
+The `commitWithInvite()` transaction exposes the invite signature in calldata. Because the invite signature is a bearer credential (it does not bind to the invitee's address), a mempool observer can extract the signature from a pending transaction and submit a competing transaction with the same signature as a different `msg.sender`, stealing the invite slot.
+
+This does not affect `invite()` (direct path — the invitee address is explicit) or `commit()` (no signature involved).
+
+**Mitigation: private transaction submission.**
+
+Because `commitWithInvite()` exposes a bearer invite signature in calldata, redeeming an invite link through the public mempool creates theft risk. On Ethereum mainnet, the committer app should recommend and, where supported by the connected wallet/provider, default to a private transaction path such as Flashbots Protect (`https://rpc.flashbots.net`). This reduces public-mempool front-running risk by avoiding public broadcast before inclusion. It is a trust-based mitigation, not a cryptographic guarantee: users still trust the private-orderflow provider and participating builders not to disclose or misuse transaction contents.
+
+Use default Protect, not `/fast` mode. Default Protect forwards only to the Flashbots builder. Fast mode shares with all registered builders and TEE searchers, which is worse for a bearer credential where privacy matters more than speed.
+
+**Implementation note:**
+
+In typical wallet-connected flows, private submission depends on the user wallet / RPC path, not just the dapp. The easiest supported path today is a wallet configured to the Flashbots Protect RPC. Advanced app-controlled submission paths may use private transaction APIs directly, but these are separate from normal public-RPC wallet flows. If private submission is unavailable for the connected wallet or provider, the UI should show an explicit warning before the user submits `commitWithInvite()` through the public mempool.
+
+**Why not bind the signature to the invitee?**
+
+Including the invitee address in the EIP-712 signed message would eliminate the front-running risk but would require the inviter to know the invitee's wallet address before creating the link. This defeats the invite link model where the inviter creates a shareable link without knowing who will use it. The bearer credential design is intentional — private transaction submission is the appropriate UI-layer mitigation.
+
+**Fallback: nonce revocation.**
+
+If a participant suspects their invite link has been leaked or compromised, the inviter can call `revokeInviteNonce(nonce)` to permanently invalidate the link before it is redeemed. This is an on-chain transaction (costs gas) and serves as a kill-switch.
+
 ### Path B: Direct Invite Flow
 
 For inviters who already know the recipient's address:

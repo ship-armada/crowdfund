@@ -174,7 +174,7 @@ The inviter creates a shareable link without knowing the recipient's address. Th
 4. The contract verifies the signature, checks the nonce and deadline, records the invite edge, records the commitment, and emits both `Invited` and `Committed` events atomically.
 
 **Properties:**
-- **Bearer credential.** The link can be used by anyone who has it. The inviter does not choose the recipient — the first person to redeem the link becomes the invitee. Share links privately.
+- **Bearer credential.** The link can be used by anyone who has it. The inviter does not choose the recipient — the first person to redeem the link becomes the invitee. Share links privately. Because the signature does not bind to the invitee's address, a pending `commitWithInvite()` transaction is front-runnable: a mempool observer can extract the signature and submit a competing transaction. The committer app mitigates this by recommending private transaction submission (e.g., Flashbots Protect on Ethereum mainnet), which avoids public broadcast before inclusion. This is a UI-layer mitigation, not a protocol guarantee. See CROWDFUND_COMMITTER.md for implementation details.
 - **No slot reservation.** Signing a link does not reserve an invite slot. Slots are checked at redemption time. An inviter may sign more links than they have slots; only the first N redeemed (where N = available slots) will succeed.
 - **Invite and commitment are atomic.** The invitee appears in the graph only when they commit with funds. There are no invited-but-uncommitted phantom nodes from the link path.
 - **5-day default expiry.** The `deadline` is baked into the signed message. Expired links fail at redemption. Generating a replacement link is free (another off-chain signature).
