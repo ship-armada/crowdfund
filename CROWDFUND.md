@@ -151,7 +151,7 @@ Invitations are signed on-chain (inviter → invitee, with hop level). The invit
 - The same address may appear at multiple hop levels as a distinct node at each
 - An invite edge connects `(inviter_address, inviter_hop)` → `(invitee_address, invitee_hop)`
 - A seed (hop-0) inviting their own address to hop-1 creates a self-loop edge, visible as such in the graph
-- Invite slot consumption is per `(address, hop)` node: a hop-0 node has 3 outgoing invite slots; a hop-1 node has 2. A single address occupying both hop-0 and hop-1 has both slot budgets, consumed independently. **There is no limit on how many times a given address may be invited to the same hop** — each invite creates a separate participation slot, and the address's effective cap at that hop equals `participation_slots[(address, hop)] × HOP_CAP[hop]`. Invite rights also scale: each invite to hop-1 grants 2 outgoing hop-2 invite slots. A natural consequence: a seed who self-invites their own address to hop-1 three times occupies 3 hop-1 slots (cap: 3 × $4k = $12k) and gains 6 outgoing hop-2 invite slots — giving one address unilateral control over a full $33k subtree, fully legible in the graph. For full entity-level capture analysis, see Self-Filling section.
+- Invite slot consumption is per `(address, hop)` node: a hop-0 node has 3 outgoing invite slots; a hop-1 node has 2. A single address occupying both hop-0 and hop-1 has both slot budgets, consumed independently. **Each invite to a given hop creates a separate participation slot, up to a per-hop stacking cap:** hop-0 = 1 (seeds are added once), hop-1 = 10, hop-2 = 20. The address's effective cap at that hop equals `participation_slots[(address, hop)] × HOP_CAP[hop]`. Invite rights also scale: each invite to hop-1 grants 2 outgoing hop-2 invite slots. A natural consequence: a seed who self-invites their own address to hop-1 three times occupies 3 hop-1 slots (cap: 3 × $4k = $12k) and gains 6 outgoing hop-2 invite slots — giving one address unilateral control over a full $33k subtree, fully legible in the graph. The self-fill analysis ($33k maximum) remains valid because the recursive self-invite tree produces at most 1 hop-0, 3 hop-1, and 6 hop-2 slots — all well within the per-hop stacking caps. For full entity-level capture analysis, see Self-Filling section.
 - For allocation, each `(address, hop)` node participates independently — an address at hop-0 and hop-1 receives ARM from both hop buckets, accumulated into a single address balance
 
 This model makes entity-level participation unambiguously legible without wallet correlation. Separate-wallet self-fill is also permitted and visible in graph shape, but same-entity control across wallets is not provable on-chain.
@@ -215,7 +215,9 @@ Both paths produce the same graph edge — `(inviter, fromHop) → (invitee, fro
 
 #### Duplicate Invites
 
-Multiple inviters may invite the same address to the same hop. Each invite creates a new participation slot for that address at that hop. The invitee's effective cap at the hop increases by `HOP_CAP[hop]` per invite received — this is the same `participation_slots[(address, hop)] × HOP_CAP[hop]` rule that applies to self-invites. All edges are recorded and visible in the graph. An invite slot is consumed for each inviter regardless.
+Multiple inviters may invite the same address to the same hop, up to the per-hop stacking cap (`maxInvitesReceived`: hop-0 = 1, hop-1 = 10, hop-2 = 20). Each invite creates a new participation slot for that address at that hop. The invitee's effective cap at the hop increases by `HOP_CAP[hop]` per invite received — this is the same `participation_slots[(address, hop)] × HOP_CAP[hop]` rule that applies to self-invites. All edges are recorded and visible in the graph. An invite slot is consumed for each inviter regardless.
+
+Note: `invitedBy` records only the first inviter for each `(address, hop)` node. When subsequent inviters stack additional invites to the same node, `invitesReceived` increments but `invitedBy` does not change. The full multi-inviter history is recoverable from `Invited` events.
 
 The same inviter may also invite the same address to the same hop more than once (e.g., via two separate links). Each successful redemption creates a new slot. This is permitted for consistency ("allow everything, make it visible"), and the inviter's slot budget limits how many such invites they can issue.
 
@@ -229,7 +231,7 @@ Invite links (Path A) can be revoked before redemption by calling `revokeInviteN
 
 A participant may commit at multiple hop levels using a single address, and receives ARM allocation from each hop they participate in — subject to that hop's per-slot cap and pro-rata rules. This is the preferred model for transparency: a seed using the same address across all hops creates unambiguously legible self-loop edges in the invite graph, and receives their full multi-hop allocation without any penalty.
 
-There is no per-address limit on how many times an address may appear at a given hop. Each invite to a hop creates a separate participation slot, and the effective cap equals `participation_slots[(address, hop)] × HOP_CAP[hop]`. A seed using all 3 of its hop-1 invite slots on itself gains 3 hop-1 slots (cap: 3 × $4k = $12k), and each of those slots grants 2 hop-2 invites — 6 hop-2 slots total (cap: 6 × $1k = $6k).
+An address may appear at a given hop multiple times, up to the per-hop stacking cap (hop-0 = 1, hop-1 = 10, hop-2 = 20). Each invite to a hop creates a separate participation slot, and the effective cap equals `participation_slots[(address, hop)] × HOP_CAP[hop]`. A seed using all 3 of its hop-1 invite slots on itself gains 3 hop-1 slots (cap: 3 × $4k = $12k), and each of those slots grants 2 hop-2 invites — 6 hop-2 slots total (cap: 6 × $1k = $6k).
 
 Maximum self-fill for a seed via full recursive self-invitation with one address:
 
@@ -240,7 +242,7 @@ Maximum self-fill for a seed via full recursive self-invitation with one address
 | Hop-2 | $1,000 | 6 (from hop-1 invites) | $6,000 |
 | **Total** | | | **$33,000** |
 
-An address may also receive invites from other participants (e.g., another seed inviting the same address to hop-1), which adds further slots beyond the self-invite tree. The per-hop cap for any address is `participation_slots[(address, hop)] × HOP_CAP[hop]` — there is no per-address ceiling beyond what the invite graph produces. An address invited by multiple independent seeds accumulates across all subtrees; all such participation is visible in the graph.
+An address may also receive invites from other participants (e.g., another seed inviting the same address to hop-1), which adds further slots beyond the self-invite tree, up to the per-hop stacking cap. The per-hop cap for any address is `min(participation_slots[(address, hop)], maxInvitesReceived[hop]) × HOP_CAP[hop]`. An address invited by multiple independent seeds accumulates across all subtrees; all such participation is visible in the graph.
 
 Participating across hops using separate wallets is also permitted. Graph edges are visible, but same-entity control across separate wallets cannot be proven on-chain.
 

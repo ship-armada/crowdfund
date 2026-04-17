@@ -291,7 +291,7 @@ Record: `finalize_tx = [hash]`, `block = [number]`, `refundMode = [true/false]`,
 
 ### Step 3: Post-finalization verification (success path)
 
-- [ ] Treasury received `netProceeds` USDC: verify `USDC.balanceOf(treasury)` increased by `netProceeds`
+- [ ] Treasury received proceeds: verify `USDC.balanceOf(treasury)` increased by approximately `netProceeds` from the `Finalized` event, minus the rounding buffer (`participantNodes.length × NUM_HOPS` USDC units). The event's `netProceeds` is the theoretical allocated USDC; the actual transfer is reduced by the buffer. A difference within the buffer is expected; a difference exceeding it indicates a real mismatch.
 - [ ] Aggregate state is correctly written: read `saleSize`, `ceilings[]`, `hopDemand[]`, `totalAllocatedArm`, `totalArmTransferred == 0` from contract
 - [ ] Verify `computeAllocation(address)` returns correct values for a sample of known participants (spot-check against manual calculation)
 - [ ] Unsold ARM: `ARM.balanceOf(crowdfundContract)` > `totalAllocatedArm` (unsold portion is sweepable)
@@ -356,7 +356,7 @@ Record: `cancel_tx = [hash]`, `block = [number]`, `rationale = [description]`
 | | |
 |---|---|
 | **Actor** | Treasury |
-| **Action** | Record `USDC.balanceOf(treasury)` **before** calling `finalize()`. After finalization, verify the balance increased by exactly `netProceeds` from the `Finalized` event. Do not compare against the absolute post-finalization balance — the treasury may hold USDC from other sources. |
+| **Action** | Record `USDC.balanceOf(treasury)` **before** calling `finalize()`. After finalization, verify the balance increased by approximately `netProceeds` from the `Finalized` event, minus the rounding buffer (`participantNodes.length × NUM_HOPS` USDC units). The event's `netProceeds` is the theoretical allocated USDC; the actual transfer is reduced by the buffer to ensure the contract never runs short on refund payouts. A difference within the buffer is expected; a difference exceeding it requires investigation. Do not compare against the absolute post-finalization balance — the treasury may hold USDC from other sources. |
 | **Preconditions** | Successful finalization (not refundMode) |
 | **Fallback** | If proceeds delta mismatch: investigate immediately; do not transfer or use until reconciled |
 
@@ -514,7 +514,7 @@ For the full cancel procedure see §7. This failure scenario covers the decision
 
 **Decision authority:** Security Council only. No single team member can trigger cancel.
 
-**If Security Council is split or unavailable:** Do not cancel unilaterally. The contract will either succeed normally or participants will be eligible for refunds via the deadline-based eligibility condition. Forced cancel without quorum is not possible.
+**If Security Council is split or unavailable:** Do not cancel unilaterally. The contract will either succeed normally or, if demand is sub-minimum, anyone can call `finalize()` (permissionless) after the deadline, which sets `refundMode = true` and activates `claimRefund()` for all participants. Forced cancel without quorum is not possible.
 
 ---
 

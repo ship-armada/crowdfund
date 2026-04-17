@@ -135,12 +135,9 @@ These values are defined in GOVERNANCE.md and affect the ARM token / governor co
 
 | Parameter | Value | Verified | Notes |
 |---|---|---|---|
-| Settlement mode | `[TBD: single-tx / phased]` | ☐ | Determined during development and gas testing. Recorded here before deployment. |
+| Settlement mode | Lazy settlement | ✓ | `finalize()` writes aggregate state only; `Allocated` + `AllocatedHop` emitted at individual `claim()` time. No `emitSettlement()`, no `SettlementComplete`. |
 | Gas estimate at max network | `[TBD]` gas | ☐ | From IMPLEMENTATION_TEST.md S16 fixture |
 | Block gas limit target | 30,000,000 | — | Current mainnet limit |
-
-**If single-tx:** `finalize()` emits `Finalized` + `Allocated` + `AllocatedHop` in one transaction. `emitSettlement()` reverts.
-**If phased:** `finalize()` emits only `Finalized`. `emitSettlement()` emits settlement events in monotonic batches. Final batch emits `SettlementComplete`.
 
 ---
 
@@ -170,7 +167,7 @@ Fill after deployment. This section is the permanent record.
 | ARM balance verified (1,800,000e18) | ☐ |
 | Observer confirmed operational | ☐ |
 | Committer confirmed operational | ☐ |
-| Settlement mode confirmed | `[single-tx / phased]` |
+| Settlement mode confirmed | Lazy settlement |
 
 ---
 
