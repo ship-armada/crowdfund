@@ -8,7 +8,7 @@ Armada will raise funds by "word-of-mouth whitelisting." The allocation mechanis
 
 | Parameter | Value |
 |---|---|
-| Purpose | Fund MVP |
+| Purpose | Governance bootstrapping |
 | Minimum fund | 1,000,000 USDC ($1.0m) |
 | Base fund | 1,200,000 ARM ($1.2M) |
 | Max fund (elastic) | 1,800,000 ARM ($1.8M) |
