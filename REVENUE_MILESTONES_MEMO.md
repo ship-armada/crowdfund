@@ -2,7 +2,7 @@
 
 When the crowdfund closes, only one group governs Armada: the people who funded it.
 
-Team and airdrop tokens exist on-chain from day one. They are published, visible, and accounted for. But they carry zero voting power and cannot be transferred until the protocol generates real revenue. No calendar. No vesting cliff. No unlock without earnings.
+Early network tokens exist on-chain from day one. They are published, visible, and accounted for. But they carry zero voting power and cannot be transferred until the protocol generates real revenue. No calendar. No vesting cliff. No unlock without earnings.
 
 This is the arrangement: you fund it and you govern it, and decide who is responsible for allocating the funds and if that should change. You decide if you still believe in the mission, or if you want to wind down the protocol and distribute remaining treasury to ARM holders.
 
@@ -10,29 +10,27 @@ This is the arrangement: you fund it and you govern it, and decide who is respon
 
 ## The shift
 
-As cumulative protocol revenue grows, team and airdrop tokens unlock in tranches and begin voting. Here is what that looks like:
+As cumulative protocol revenue grows, early network tokens unlock in tranches and begin voting. Here is what that looks like:
 
-| Cumulative Protocol Revenue | Crowdfund participants | Launch team (individuals) | Airdrop cohort |
-|---|---|---|---|
-| $0 — launch | 100% | 0% | 0% |
-| $10k | 83% | 13% | 4% |
-| $50k | 67% | 25% | 8% |
-| $100k | 56% | 33% | 11% |
-| $250k | 46% | 41% | 14% |
-| $500k | 38% | 46% | 15% |
-| $1M — full unlock | 33% | 50% | 17% |
+| Cumulative Protocol Revenue | Crowdfund participants | Early network |
+|---|---|---|
+| $0 — launch | 100% | 0% |
+| $10k | 83% | 17% |
+| $50k | 67% | 33% |
+| $100k | 56% | 44% |
+| $250k | 46% | 54% |
+| $500k | 38% | 62% |
+| $1M — full unlock | 33% | 67% |
 
-_Assumes 10% crowdfund distribution (base raise). If the crowdfund expands to 15% (1.8M ARM), crowdfund participants hold 43% at full unlock — equal to the launch team._
+_Assumes 10% crowdfund distribution (base raise). If the crowdfund expands to 15% (1.8M ARM), crowdfund participants hold 43% at full unlock._
 
 A few things the table doesn't show that matter:
 
-**Launch team tokens are held in individual wallets, not a shared entity.** Allocations are distributed to individual team members before the crowdfund opens and are published. Each person governs independently. The 50% column represents the aggregate if every team member voted identically on every proposal — which is both unlikely and visible on-chain when it happens.
+**Early network tokens are held in individual wallets, not a shared entity.** Allocations are distributed to individual recipients before the crowdfund opens and are published. Each person governs independently. The 67% column represents the aggregate if every recipient voted identically on every proposal — which is both unlikely and visible on-chain when it happens.
 
-**The airdrop cohort has its own independent interests and views.** The 17% at full unlock is held by recipients whose prior work informed the protocol — each governing independently, not as a bloc aligned with the launch team.
+**No individual recipient holds outsized unilateral power.** The largest single allocation is 4.5% of total supply. At full unlock that represents 15% of non-treasury votes — meaningful, but not controlling on its own.
 
-**No individual team member holds outsized unilateral power.** The largest single allocation in the launch team is 4.5% of total supply. At full unlock that represents 15% of non-treasury votes — meaningful, but not controlling on its own.
-
-At full unlock, the launch team in aggregate holds a governance majority only by building a protocol that generates $1M in cumulative protocol fees. By earning it, not by waiting for a scheduled unlock.
+At full unlock, the early network in aggregate holds a governance majority only by building a protocol that generates $1M in cumulative protocol fees. By earning it, not by waiting for a scheduled unlock.
 
 ---
 
@@ -58,7 +56,7 @@ What the thresholds represent in practice:
 
 ## The failure case
 
-If revenue milestones are never reached, locked tokens never unlock. Team and airdrop allocations have no claim on treasury assets in a wind-down. Only circulating ARM holders — the people who paid — have priority.
+If revenue milestones are never reached, locked tokens never unlock. Early network allocations have no claim on treasury assets in a wind-down. Only circulating ARM holders — the people who paid — have priority.
 
 There is no floor for zero-cost-basis tokens. There is no time-based fallback. The team's tokens are worth something only if the protocol is worth something.
 

@@ -26,43 +26,36 @@ Armada will raise funds by "word-of-mouth whitelisting." The allocation mechanis
 | Allocation | ARM | % | Unlock | Voting Power |
 |---|---|---|---|---|
 | Crowdfund | 1,200,000 - 1,800,000 | 10-15% | Governance proposal | Active once claimed and delegated |
-| Team | 1,800,000 | 15% | Revenue milestones | Revenue-gated |
-| Airdrop | 600,000 | 5% | Revenue milestones | Revenue-gated |
+| Early network | 2,400,000 | 20% | Revenue milestones | Revenue-gated |
 | Treasury | 7,800,000 - 8,400,000 | 65-70% | Governance-controlled | None |
 
 ### Pre-Crowdfund Distribution
 
 Before the crowdfund opens, the following revenue-locked allocations are distributed and published:
 
-**Team Allocation (1,800,000 ARM):** See Team Allocation section below for full specification. All assignments are revenue-locked and published — role labels, wallet addresses, and percentages — before the crowdfund opens.
-
-**Airdrop Allocation (600,000 ARM):**
-- Distributed to qualifying recipients before the crowdfund opens
-- Revenue-locked (same terms as team)
+**Early Network Allocation (2,400,000 ARM):** Covers launch team, ecosystem contributors, and a reserve for future contributors. All held in a single shared revenue-lock contract with per-beneficiary allocations. Every recipient, wallet address, and amount is published before the crowdfund opens. See REVENUE_LOCK.md for the full contract spec.
 
 **Transparency:**
 
 Crowdfund participants can evaluate the full distribution (ie. who holds what and under what terms) before committing.
 
-### Team Allocation
+### Early Network Allocation
 
-The team allocation (1,800,000 ARM, 15%) is held in a single shared revenue-lock contract with per-beneficiary allocations. Each team member has their own entry in the beneficiary list and governs independently — the team does not vote as a bloc.
-
-The Knowable Safe appears in the beneficiary list like any other team member, with a larger allocation reserved for future contributors. Future contributor distributions are handled off-chain (token agreements between Knowable and contributors); once ARM is released to the Safe's wallet per the milestone schedule and global transfers are enabled, Knowable distributes via standard transfers. See REVENUE_LOCK.md for the full contract spec.
+The early network allocation (2,400,000 ARM, 20%) is held in a single shared revenue-lock contract with per-beneficiary allocations. Each recipient has their own entry in the beneficiary list and governs independently. The Knowable Safe appears in the beneficiary list like any other recipient, with a reserve allocation earmarked for future contributors. Future contributor distributions are handled off-chain (token agreements between Knowable and contributors); once ARM is released to the Safe's wallet per the milestone schedule and global transfers are enabled, Knowable distributes via standard transfers. See REVENUE_LOCK.md for the full contract spec.
 
 **Properties:**
-- Revenue-locked transferability (same schedule as all team/airdrop tokens)
+- Revenue-locked transferability (same schedule as all early network tokens)
 - Voting power unlocks proportionally with revenue milestones
-- Each team member governs independently ie. the team does not vote as a bloc
+- Recipients do not vote as a bloc
 
 **Constraints:**
 - Cannot change the revenue-lock schedule
 - Cannot pull from treasury or other allocations
 - Knowable Safe's own ARM release follows the same revenue-lock milestone schedule. Future contributor distributions from the Safe are off-chain standard transfers after release and global transfer unlock — they are not on-chain revenue-lock-enforced. See REVENUE_LOCK.md §4.
 
-### Revenue-Gated Unlocks (Team + Airdrop)
+### Revenue-Gated Unlocks (Early Network)
 
-Team and airdrop tokens unlock and gain voting power only via cumulative protocol revenue:
+Early network tokens unlock and gain voting power only via cumulative protocol revenue:
 
 | Cumulative Revenue | Unlocked | Voting Power |
 |---|---|---|
@@ -504,7 +497,7 @@ The crowdfund contract includes an emergency cancel mechanism for catastrophic p
 
 ## Governance
 
-Crowdfund tokens are not revenue-gated. Voting power becomes active once ARM is claimed and delegated — unclaimed ARM is vote-inert. Team and airdrop tokens gain voting power proportional to revenue-milestone unlocks — at $0 protocol revenue, only crowdfund participants who have claimed and delegated vote.
+Crowdfund tokens are not revenue-gated. Voting power becomes active once ARM is claimed and delegated — unclaimed ARM is vote-inert. Early network tokens gain voting power proportional to revenue-milestone unlocks — at $0 protocol revenue, only crowdfund participants who have claimed and delegated vote.
 
 ARM must be delegated to vote. Delegation is designated at claim time as a mandatory parameter. The Security Council can cancel the crowdfund pre-finalization in an emergency — see §Emergency Cancel.
 
@@ -512,7 +505,7 @@ Standard proposals take approximately 11 days (48h delay + 7d vote + 48h executi
 
 Crowdfund tokens become transferable via governance proposal. There are no predeclared conditions — holders decide when.
 
-Team and airdrop tokens cannot be unlocked by governance. They unlock only via revenue milestones.
+Early network tokens cannot be unlocked by governance. They unlock only via revenue milestones.
 
 Treasury tokens (65–70%) are controlled by governance but do not vote.
 
@@ -551,7 +544,7 @@ If cumulative protocol revenue does not reach the threshold by the deadline, win
 4. Governance ends permanently — no new proposals, no steward proposals, no parameter changes
 5. Non-ARM treasury assets are swept to the redemption contract via permissionless `sweepToken(address)` calls (one per token; `sweepToken(ARM)` reverts — treasury ARM stays locked permanently)
 6. ARM holders deposit ARM into the redemption contract and receive their pro-rata share of non-ARM treasury assets. No snapshot, no deadline — deposit whenever you want. See GOVERNANCE.md §Wind-Down for the full redemption mechanism.
-7. Team and airdrop tokens have no treasury claim unless released via revenue milestones before wind-down. Unreleased ARM stays in the revenue-lock contract permanently.
+7. Early network tokens have no treasury claim unless released via revenue milestones before wind-down. Unreleased ARM stays in the revenue-lock contract permanently.
 
 **Unclaimed ARM after wind-down.** Participants may claim their ARM at any time after wind-down (subject to the 3-year deadline). Once claimed, they can deposit it into the redemption contract to receive their treasury share. The 3-year ARM claim deadline continues to apply. Unclaimed ARM in the crowdfund contract is excluded from the redemption denominator, so it does not dilute redeemers.
 
@@ -579,13 +572,13 @@ Those who paid have priority over those who received tokens at zero cost basis. 
 | Decision | Resolution | Rationale |
 |---|---|---|
 | Treasury voting | Treasury does not vote | Avoids control ambiguity |
-| Team/airdrop voting | Revenue-gated | Only people who paid decide until protocol proves itself |
+| Early network voting | Revenue-gated | Only people who paid decide until protocol proves itself |
 | Steward voting eligibility | Voting-eligible ARM only | Treasury decisions by economic stakeholders |
 | Invite graph | Fully public throughout the crowdfund | No post-finalization reveal step. Participants are joining a trust network — its shape should be legible from the start. Simplifies implementation; reinforces governance bootstrapping framing over token allocation framing |
 | Enactment delay | 48 hours standard; 7 days extended | Short delay is honest — without locking, market prices outcomes during voting anyway. Extended delay gives Security Council a meaningful veto window on high-impact proposals. |
 | Elastic expansion | Binary to 1.8M ARM | Accommodates demand without distorting any future fundraising |
 | Team allocation control | Single shared revenue-lock contract with per-beneficiary allocations; Knowable Safe is a beneficiary like any other team member | Each team member governs independently; Knowable Safe handles future contributors off-chain after release and global transfer unlock |
-| Pre-crowdfund distribution | Team + airdrop distributed before the crowdfund opens | Full transparency for funders |
+| Pre-crowdfund distribution | Early network allocation distributed before the crowdfund opens | Full transparency for funders |
 | Recurring payments | Not supported in v1 | Steward submits monthly batches instead |
 | Hop allocation model | Demand-driven ceilings, not fixed reserves | Capacity follows actual demand; no hop is guaranteed allocation it didn't earn; unused capacity rolls forward |
 | Overlapping ceilings | Hop-0 and hop-1 sum to 115% of available (70/45); hop-2 has no fixed ceiling | Hop-0 and hop-1 can absorb more if the other underperforms. Hop-2's effective ceiling is floor + hop-1 leftover — it can grow arbitrarily large if earlier hops are empty, preserving full rollover flexibility |

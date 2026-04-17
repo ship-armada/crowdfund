@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-A single shared contract that holds all team and airdrop ARM (2,400,000 total) and releases it to beneficiaries as cumulative protocol revenue milestones are reached. This is the enforcement mechanism for revenue-gated token unlocks described in GOVERNANCE.md and ARM_TOKEN.md.
+A single shared contract that holds all early network ARM (2,400,000 total) and releases it to beneficiaries as cumulative protocol revenue milestones are reached. This is the enforcement mechanism for revenue-gated token unlocks described in GOVERNANCE.md and ARM_TOKEN.md.
 
 **This is a contract behavior spec.** It defines what the contract does, what it reads, and what it guarantees.
 
@@ -19,7 +19,7 @@ RevenueLock (immutable, non-upgradeable)
   ├── stores: maxObservedRevenue (monotonic, rate-limited)
   ├── stores: lastSyncTimestamp (advances unconditionally on every sync)
   ├── immutable: MAX_REVENUE_INCREASE_PER_DAY
-  ├── holds: 2,400,000 ARM (team + airdrop)
+  ├── holds: 2,400,000 ARM (early network)
   ├── tracks: per-beneficiary allocations and released amounts
   └── releases: ARM to beneficiary wallet + delegates atomically via delegateOnBehalf()
 
@@ -64,14 +64,13 @@ Set at deployment. Cannot be modified after deployment.
 
 | Beneficiary | Allocation | Notes |
 |---|---|---|
-| Team member 1 | `[amount]` | Individual |
-| Team member 2 | `[amount]` | Individual |
+| Recipient 1 | `[amount]` | |
+| Recipient 2 | `[amount]` | |
 | ... | ... | ... |
-| Knowable Safe | `[amount]` | Larger allocation for future contributors. Released ARM distributed off-chain via token agreements after global transfer unlock. |
-| Airdrop recipient 1 | `[amount]` | Individual |
+| Knowable Safe | `[amount]` | Reserve for future contributors. Released ARM distributed off-chain via token agreements after global transfer unlock. |
 | ... | ... | ... |
 
-**Total must equal exactly 2,400,000 ARM** (1,800,000 team + 600,000 airdrop). The contract should verify this at deployment.
+**Total must equal exactly 2,400,000 ARM.** The contract should verify this at deployment.
 
 **No post-deployment modifications.** There is no function to add, remove, or change beneficiaries. There is no admin role. The Knowable Safe handles future contributor allocation off-chain after its ARM is released and global transfers are enabled — the lock contract doesn't need to know about this.
 
@@ -210,7 +209,7 @@ If `triggerWindDown()` is called on the wind-down contract:
 - Already-released ARM is in beneficiaries' wallets and is part of the "circulating" supply eligible for pro-rata treasury distribution.
 - Wind-down automatically enables global ARM transfers (`setTransferable(true)`), so beneficiaries who have released ARM can move it to claim their treasury share.
 
-**This is the intended fairness property:** those who paid (crowdfund participants) have priority in failure scenarios. Team/airdrop tokens only unlock if the protocol earns revenue — if it failed before earning revenue, those tokens stay locked and have no claim on remaining assets.
+**This is the intended fairness property:** those who paid (crowdfund participants) have priority in failure scenarios. Early network tokens only unlock if the protocol earns revenue — if it failed before earning revenue, those tokens stay locked and have no claim on remaining assets.
 
 ---
 
